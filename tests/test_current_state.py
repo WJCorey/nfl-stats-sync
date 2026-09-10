@@ -278,7 +278,7 @@ def test_live_current_state_excludes_assertions_about_a_shape() -> None:
             "active": True,
             "durableId": f"durable-{wref}",
             "data": {"definition": "x"},
-            "about": about,
+            "aboutWref": about,
         }
 
     rows = [
