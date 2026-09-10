@@ -1,0 +1,82 @@
+name: nfl-stats sync
+
+on:
+  workflow_dispatch:
+  # Reviewed cadence (daily 10:30 UTC == 06:30 America/New_York, EDT). Leave
+  # commented out until the operator approves scheduled runs; GitHub schedules
+  # are best-effort, which is safe here because the next run catches up.
+  # schedule:
+  #   - cron: "30 10 * * *"
+
+# One writer/planner at a time against agentgm/nfl-stats. Never cancel an
+# active synchronization: queued runs wait instead.
+concurrency:
+  group: nfl-stats-sync-agentgm-nfl-stats
+  cancel-in-progress: false
+
+jobs:
+  # Default job: acquire fresh nflverse source and produce a reviewable plan
+  # against the committed fixture current state. No WarmHub credential is read.
+  prepare-fresh-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --group dev
+      - run: uv run pytest -q
+      - run: uv run dg check defs && uv run dg check toml
+      - name: prepare_fresh_sync
+        env:
+          DAGSTER_HOME: ${{ github.workspace }}/.dagster
+          MUSHROOM_TARGET: agentgm/nfl-stats
+        run: |
+          mkdir -p "$DAGSTER_HOME"
+          uv run dg launch --job prepare_fresh_sync
+      - name: Report plan summary
+        run: |
+          MUSHROOM_HOME=.mushroom
+          jq . "$(jq -r '.key' "$MUSHROOM_HOME/refs/plan.json" | sed "s#^#$MUSHROOM_HOME/#")"
+      - name: Retain checked snapshots and plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mushroom-prepare-${{ github.run_id }}
+          path: .mushroom/
+          retention-days: 30
+          include-hidden-files: true
+
+  # Live synchronization: requires the repository variable LIVE_SYNC_APPROVED
+  # to equal "true" AND the secrets WARMHUB_API_URL / WH_TOKEN /
+  # MUSHROOM_TARGET. The secret-backed target keeps a fork or copied workflow
+  # from silently pointing writes somewhere reviewed for a different repo.
+  synchronize:
+    if: ${{ vars.LIVE_SYNC_APPROVED == 'true' }}
+    needs: prepare-fresh-sync
+    runs-on: ubuntu-latest
+    environment: live-warmhub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --group dev
+      - run: uv run pytest -q
+      - name: synchronize
+        env:
+          DAGSTER_HOME: ${{ github.workspace }}/.dagster
+          WARMHUB_API_URL: ${{ secrets.WARMHUB_API_URL }}
+          WH_TOKEN: ${{ secrets.WH_TOKEN }}
+          MUSHROOM_TARGET: ${{ secrets.MUSHROOM_TARGET }}
+          # acquire() fails closed unless every ledger durableUri is published.
+          NFLSTATS_REQUIRE_PUBLISHED_ARTIFACTS: "true"
+        run: |
+          test -n "$WARMHUB_API_URL" && test -n "$WH_TOKEN" && test -n "$MUSHROOM_TARGET"
+          mkdir -p "$DAGSTER_HOME"
+          printf 'resources:\n  warmhub_client:\n    config:\n      enabled: true\n' > live.yaml
+          uv run dg launch --job synchronize --config live.yaml
+      - name: Retain checked snapshots, plan, and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mushroom-synchronize-${{ github.run_id }}
+          path: .mushroom/
+          retention-days: 30
+          include-hidden-files: true

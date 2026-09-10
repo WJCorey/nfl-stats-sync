@@ -204,3 +204,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# nfl-stats-sync: raw transport downloads (30-day lifecycle; never commit)
+.cache/
+# staged canonical artifacts are content-addressed and published to GitHub
+# Releases by scripts/publish_artifacts.sh; the committed identity lives in
+# artifacts/ledger.json
+artifacts/staged/
