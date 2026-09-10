@@ -55,11 +55,11 @@ STAGED_DIR = _PROJECT_ROOT / "artifacts" / "staged"
 # Durable-locator host decision (public GitHub Releases on this repository) is
 # PENDING operator approval; see project/SPEC.md "Open decisions".
 DEFAULT_DURABLE_URI_TEMPLATE = (
-    "https://github.com/warmautomation/nfl-stats-sync/releases/download/"
+    "https://github.com/WJCorey/nfl-stats-sync/releases/download/"
     "artifacts/{slug}-{sha16}.jsonl"
 )
 
-_USER_AGENT = "nfl-stats-sync-mushroom/1.0 (+https://github.com/warmautomation/nfl-stats-sync)"
+_USER_AGENT = "nfl-stats-sync-mushroom/1.0 (+https://github.com/WJCorey/nfl-stats-sync)"
 
 
 class AcquisitionError(RuntimeError):

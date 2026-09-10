@@ -71,7 +71,7 @@ def test_first_acquire_populates_ledger_and_stages_artifacts(tmp_path: Path) -> 
         assert len(staged.read_bytes()) == row["byteLength"]
         assert row["acceptedAt"] == "2026-09-10T06:30:00Z"
         assert row["canonicalizationPolicy"] == "agentgm-nflverse-canonical-jsonl/v1"
-        assert row["durableUri"].startswith("https://github.com/warmautomation/nfl-stats-sync/")
+        assert row["durableUri"].startswith("https://github.com/WJCorey/nfl-stats-sync/")
 
 
 def test_unchanged_recapture_is_a_complete_ledger_noop(tmp_path: Path) -> None:

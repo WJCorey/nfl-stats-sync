@@ -30,9 +30,14 @@ signed.**
 - [x] Synchronization unit, managed names, completeness, absence — one preserve-only accumulation unit; `complete=false`; `preserve`; never retract
 - [x] Source grain, ambiguities, and accepted information loss — five streams inspected 2026-09-10 (below)
 
-Approved by:
+Approved by: Corey (corey@warmhub.com) — authorized the public repo home, the
+GitHub-Releases durable-locator host, and the first live synchronize ("go
+ahead and start doing all that work through A, B, and C" + "Make that repo
+public … it'd be worth trying to run the first pipeline", Conductor session).
+Design decisions (scope, identity continuation, preserve/complete=false,
+grounding integration) follow PLAN.md Phase 6 as reviewed in that session.
 
-Approved on:
+Approved on: 2026-09-10
 
 ## Product questions
 
@@ -72,14 +77,11 @@ and the repository README; no CC-BY-SA or proprietary tables are touched.
 PlayerGameStats/TeamGameStats/Game/Player and `crosswalkArtifactWref?` (wref →
 SourceArtifact) on Player. Mushroom never creates or revises Shapes.
 
-> **⚠️ Pre-live blocker (operator):** `statSourceWref` is still declared
-> **required** (no `?`) on `PlayerGameStats@v2` and `TeamGameStats@v3` per
-> read-only `wh shape view`, while this project's approved contract is that new
-> records emit `sourceArtifactWref` **instead of** `statSourceWref`. If the
-> server enforces required fields at commit time, live validation of new
-> 2026 stat records will fail until an operator revises those shapes to make
-> `statSourceWref` optional (additive, no data migration). Verify with
-> `validate_sync` or the first checked batch before enabling any schedule.
+> **✅ RESOLVED 2026-09-10 (operator):** `statSourceWref` was made optional by
+> additive shape revisions — `PlayerGameStats@v3` and `TeamGameStats@v4`
+> (`--show-diff`: `+ statSourceWref?` / `- statSourceWref`, same field). New
+> records emit `sourceArtifactWref` only; legacy 2021–2025 records keep their
+> `statSourceWref` pins. The repo's SemanticContracts pin these exact versions.
 
 ## Identity (naming authority: `project/domain.py`)
 
@@ -278,7 +280,7 @@ hashes:
   content-addressed, regenerable), row rewritten with `acceptedAt` = now
   (UTC), `sourcePublishedAt` = GitHub release asset `updated_at` when
   retrievable, `durableUri` templated (default
-  `https://github.com/warmautomation/nfl-stats-sync/releases/download/artifacts/<stream-slug>-<sha16>.jsonl`,
+  `https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/<stream-slug>-<sha16>.jsonl`,
   override `NFLSTATS_DURABLE_URI_TEMPLATE`).
 
 The transform derives `SourceArtifact` desired things **purely from the
@@ -297,16 +299,17 @@ when unavailable, empty, or malformed. (As of 2026-09-10 all five streams are
 live — week 1 has begun — so the bootstrap path is exercised by tests, not by
 the current upstream state.)
 
-**Durable-locator host decision — PENDING Corey's approval:** public GitHub
-Releases on this repository (`warmautomation/nfl-stats-sync`, release tag
-`artifacts`). `scripts/publish_artifacts.sh` uploads staged artifacts
+**Durable-locator host decision — ✅ RESOLVED 2026-09-10, approved by Corey:**
+public GitHub Releases on this repository (`WJCorey/nfl-stats-sync`, release
+tag `artifacts`). Corey approved making the pipeline repo public (Conductor
+session, 2026-09-10); the `warmautomation` org has an active ruleset requiring
+private/internal repos, so the public home is Corey's personal account
+`WJCorey/nfl-stats-sync` (consistent with the personal-handles-for-leaf-repos
+convention; `warmautomation/nfl-stats-sync` is a defunct private duplicate,
+safe to delete). `scripts/publish_artifacts.sh` uploads staged artifacts
 idempotently. Live `synchronize` fails closed unless every ledger `durableUri`
 answers an HTTP HEAD with the exact canonical byte length (enforced whenever
-`WH_TOKEN` or `NFLSTATS_REQUIRE_PUBLISHED_ARTIFACTS` is set). Note: the target
-repo is public but this locator host repo is currently **private** — readers
-of `agentgm/nfl-stats` can only retrieve artifact bytes if the host repo (or
-at least its `artifacts` release) is made public, which is part of the pending
-decision.
+`WH_TOKEN` or `NFLSTATS_REQUIRE_PUBLISHED_ARTIFACTS` is set).
 
 ## Frozen vectors and evaluation evidence
 
@@ -363,16 +366,17 @@ decision.
 
 ## Open items for the operator
 
-- [ ] Sign the human approval checkpoint above.
-- [ ] Decide the durable-locator host (default: public GitHub Releases on this
-  repo) and the visibility consequence for artifact readers; then publish the
-  five staged artifacts and re-verify.
-- [ ] Resolve the `statSourceWref` required-field conflict on
-  `PlayerGameStats@v2` / `TeamGameStats@v3` (shape revise to optional, or an
-  explicit decision that new records must keep emitting it).
+- [x] Sign the human approval checkpoint above. ✅ 2026-09-10.
+- [x] Durable-locator host: ✅ public GitHub Releases on `WJCorey/nfl-stats-sync`
+  (Corey-approved 2026-09-10); publish staged artifacts before live sync.
+- [x] `statSourceWref` required-field conflict: ✅ resolved by additive shape
+  revisions `PlayerGameStats@v3` / `TeamGameStats@v4` (optional).
 - [ ] Provision live credentials (guidebook 04) and choose the single writer
-  before enabling any schedule or the CI live job.
+  before enabling any schedule or the CI live job. (First supervised local
+  synchronize is the single writer on 2026-09-10.)
 - [ ] Before the first live synchronize, refresh
   `project/fixtures/current.jsonl` from prod (guidebook 06 step 4) and review
-  the resulting plan: expect ~24.8k Player revisions, 2026 adds, zero
-  retractions, and a large preserved count.
+  the resulting plan: expect ~24.8k Player revisions (one-time provenance
+  stamping — desired state is computed from source alone, so every Player row
+  gains `sourceArtifactWref`/`crosswalkArtifactWref`; subsequent runs no-op),
+  2026 adds, zero retractions, and a large preserved count.

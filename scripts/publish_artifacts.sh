@@ -10,7 +10,7 @@
 # repository) is PENDING operator approval -- see project/SPEC.md.
 set -euo pipefail
 
-REPO="${NFLSTATS_RELEASE_REPO:-warmautomation/nfl-stats-sync}"
+REPO="${NFLSTATS_RELEASE_REPO:-WJCorey/nfl-stats-sync}"
 TAG="${NFLSTATS_RELEASE_TAG:-artifacts}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STAGED="$ROOT/artifacts/staged"
