@@ -262,3 +262,66 @@ def test_live_current_state_deduplicates_collections_returned_by_the_thing_drain
 
     assert count == 1
     assert [row["wref"] for row in parse_jsonl(payload)] == ["Set/managed/release"]
+
+
+def test_live_current_state_excludes_assertions_about_a_shape() -> None:
+    # Ontology-governance assertions (SemanticContract/NamingContract) are
+    # about a Shape; their about reference resolves to a single segment,
+    # which the reconciler's Shape/name grammar rejects. They are excluded
+    # from capture — a data project can never manage them.
+    def assertion_row(wref: str, about: str) -> dict[str, object]:
+        return {
+            "kind": "assertion",
+            "shapeName": wref.partition("/")[0],
+            "wref": wref,
+            "version": 1,
+            "active": True,
+            "durableId": f"durable-{wref}",
+            "data": {"definition": "x"},
+            "about": about,
+        }
+
+    rows = [
+        assertion_row("SemanticContract/managed/player", "Player@v2"),
+        assertion_row("Claim/managed/one", "Person/managed/one"),
+    ]
+
+    things = SimpleNamespace(
+        head_iter=lambda **options: [
+            SimpleNamespace(as_dict=lambda row=row: dict(row)) for row in rows
+        ]
+        if options["kind"] == "assertion"
+        else [],
+        head_versions=lambda references: SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    wref=reference.partition("@")[0],
+                    extra={
+                        "canonicalWref": "wh:example/repo/"
+                        + reference.partition("@")[0]
+                    },
+                )
+                for reference in references
+            ],
+            missing=[],
+        ),
+    )
+    shapes = [
+        SimpleNamespace(
+            active=True,
+            name=name,
+            version=SimpleNamespace(data={"fields": {"definition": "string"}}),
+        )
+        for name in ("SemanticContract", "Claim")
+    ]
+    client = SimpleNamespace(
+        shape=SimpleNamespace(list=lambda org, repo: SimpleNamespace(items=shapes)),
+        repository=lambda target: SimpleNamespace(things=things),
+    )
+
+    count, payload = capture_current_state(
+        client, target="example/repo", pattern="*/managed/**"
+    )
+
+    assert count == 1
+    assert [row["wref"] for row in parse_jsonl(payload)] == ["Claim/managed/one"]

@@ -77,6 +77,21 @@ def capture_current_state(client: _Client, *, target: str, pattern: str) -> tupl
     labels = _reference_labels(things, sorted(references), target)
     for source in sources:
         _map_source_references(source, shape_fields, labels.__getitem__)
+    # Assertions about a Shape (ontology-governance records such as
+    # SemanticContract/NamingContract) resolve to a single-segment about
+    # reference, which the reconciler's Shape/name grammar rejects. A data
+    # project never produces assertion desired state about a Shape, so these
+    # records are structurally unmanageable here; exclude them from the
+    # captured current state (equivalent to preserved, under any policy).
+    sources = [
+        source
+        for source in sources
+        if not (
+            source.get("kind") == "assertion"
+            and isinstance(source.get("aboutWref"), str)
+            and "/" not in source["aboutWref"].partition("@")[0]
+        )
+    ]
     return canonical_current_state(sources)
 
 
