@@ -2,11 +2,11 @@ name: nfl-stats sync
 
 on:
   workflow_dispatch:
-  # Reviewed cadence (daily 10:30 UTC == 06:30 America/New_York, EDT). Leave
-  # commented out until the operator approves scheduled runs; GitHub schedules
-  # are best-effort, which is safe here because the next run catches up.
-  # schedule:
-  #   - cron: "30 10 * * *"
+  # Reviewed cadence (daily 10:30 UTC == 06:30 America/New_York, EDT).
+  # Enabled 2026-09-10 after the first clean supervised synchronize. GitHub
+  # schedules are best-effort, which is safe here: the next run catches up.
+  schedule:
+    - cron: "30 10 * * *"
 
 # One writer/planner at a time against agentgm/nfl-stats. Never cancel an
 # active synchronization: queued runs wait instead.
@@ -54,11 +54,40 @@ jobs:
     needs: prepare-fresh-sync
     runs-on: ubuntu-latest
     environment: live-warmhub
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen --group dev
       - run: uv run pytest -q
+      # A changed upstream snapshot stages a new canonical artifact whose
+      # durableUri is not yet published; synchronize fails closed on that.
+      # So: acquire credential-free, publish staged artifacts to the release,
+      # commit the advanced ledger, THEN synchronize (its internal re-acquire
+      # is a no-op against the just-published ledger).
+      - name: acquire and stage canonical artifacts (credential-free)
+        env:
+          DAGSTER_HOME: ${{ github.workspace }}/.dagster
+          MUSHROOM_TARGET: ${{ secrets.MUSHROOM_TARGET }}
+        run: |
+          mkdir -p "$DAGSTER_HOME"
+          uv run dg launch --job prepare_fresh_sync
+      - name: publish canonical artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish_artifacts.sh
+      - name: commit advanced ledger
+        run: |
+          if ! git diff --quiet artifacts/ledger.json; then
+            git config user.name "nfl-stats-sync ci"
+            git config user.email "actions@users.noreply.github.com"
+            git add artifacts/ledger.json
+            git commit -m "ledger: accepted canonical snapshot(s) $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push origin HEAD:main
+          fi
       - name: synchronize
         env:
           DAGSTER_HOME: ${{ github.workspace }}/.dagster
