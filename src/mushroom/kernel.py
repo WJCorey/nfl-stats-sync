@@ -271,7 +271,7 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
         if outside_scope:
             raise KernelError(f"desired record is outside the managed scope: {outside_scope[0]}")
 
-        connection.execute("CREATE TABLE operations (phase INTEGER, wref VARCHAR, payload VARCHAR)")
+        connection.execute("CREATE TABLE operations (phase INTEGER, wref VARCHAR, payload VARCHAR, rank INTEGER DEFAULT 0)")
         joined = connection.cursor().execute(
             """
             SELECT
@@ -329,13 +329,14 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
                         )
                     )
             if operations:
-                connection.executemany("INSERT INTO operations VALUES (?, ?, ?)", operations)
+                connection.executemany("INSERT INTO operations VALUES (?, ?, ?, 0)", operations)
+        _rank_addition_dependencies(connection)
         digest = hashlib.sha256()
         byte_length = 0
         operations_path.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(dir=operations_path.parent, delete=False) as temporary:
             temporary_path = Path(temporary.name)
-            output_rows = connection.cursor().execute("SELECT payload FROM operations ORDER BY phase, wref")
+            output_rows = connection.cursor().execute("SELECT payload FROM operations ORDER BY phase, rank, wref")
             while rows := output_rows.fetchmany(1000):
                 for (payload,) in rows:
                     encoded = payload.encode()
@@ -357,6 +358,77 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
         unchanged_count=counts["unchanged"],
         preserved_count=counts["preserved"],
     ), digest.hexdigest(), byte_length)
+
+
+def _reference_string_values(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _reference_string_values(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _reference_string_values(item)
+
+
+def _rank_addition_dependencies(connection: duckdb.DuckDBPyConnection) -> None:
+    """Order intra-plan additions so referenced records precede their referencers.
+
+    WarmHub validates each operation's wrefs against records that exist before
+    it in the same commit; an addition referencing a later addition is a
+    forward reference and the server rejects the whole batch (observed on prod
+    2026-09-10: stat records stamped with a SourceArtifact wref sorted before
+    the SourceArtifact addition itself). Within each add phase, emit
+    referenced additions first; ties stay in deterministic wref order.
+    """
+
+    rows = connection.execute(
+        "SELECT wref, payload FROM operations WHERE phase IN (10, 30, 50)"
+    ).fetchall()
+    if not rows:
+        return
+    planned = {wref for wref, _ in rows}
+    depends_on: dict[str, set[str]] = {}
+    for wref, payload in rows:
+        operation = json.loads(payload)
+        references: set[str] = set()
+        for part in (operation.get("data"), operation.get("members"), operation.get("about")):
+            for value in _reference_string_values(part):
+                base = value.partition("@")[0]
+                if base in planned and base != wref:
+                    references.add(base)
+        depends_on[wref] = references
+    ranks: dict[str, int] = {}
+    resolving: list[tuple[str, Iterator[str]]] = []
+    for start in depends_on:
+        if start in ranks:
+            continue
+        on_stack = {start}
+        resolving.append((start, iter(depends_on[start])))
+        while resolving:
+            node, pending = resolving[-1]
+            for dependency in pending:
+                if dependency in ranks:
+                    continue
+                if dependency in on_stack:
+                    raise KernelError(
+                        f"operation plan contains a reference cycle among additions: {dependency}"
+                    )
+                on_stack.add(dependency)
+                resolving.append((dependency, iter(depends_on[dependency])))
+                break
+            else:
+                ranks[node] = 1 + max(
+                    (ranks[dependency] for dependency in depends_on[node]), default=-1
+                )
+                on_stack.discard(node)
+                resolving.pop()
+    updates = [(rank, wref) for wref, rank in ranks.items() if rank]
+    if updates:
+        connection.executemany(
+            "UPDATE operations SET rank = ? WHERE wref = ? AND phase IN (10, 30, 50)",
+            updates,
+        )
 
 
 def _load_jsonl(connection: duckdb.DuckDBPyConnection, path: Path, policy: ScopePolicy, *, current: bool) -> None:

@@ -212,3 +212,4 @@ __marimo__/
 # artifacts/ledger.json
 artifacts/staged/
 live-read.yaml
+live.yaml

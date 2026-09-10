@@ -434,3 +434,51 @@ def test_reconcile_rejects_an_operation_path_that_aliases_an_input(tmp_path: Pat
         )
 
     assert desired_path.read_bytes() == payload
+
+
+def test_additions_emit_referenced_records_before_their_referencers() -> None:
+    # Observed on prod 2026-09-10: within the add phase, alphabetical order
+    # put stat records ahead of the SourceArtifact addition they reference,
+    # and WarmHub rejects forward references inside one commit.
+    referencer = {
+        "kind": "thing",
+        "shape": "Measurement",
+        "wref": "Measurement/managed/one",
+        "data": {"evidence": "Source/managed/stream", "note": "x"},
+    }
+    referenced = {
+        "kind": "thing",
+        "shape": "Source",
+        "wref": "Source/managed/stream",
+        "data": {"label": "stream"},
+    }
+    policy = ScopePolicy("warmhub-data/example", "*/managed/**", False, "preserve")
+
+    operations, _ = reconcile([referencer, referenced], [], policy)
+
+    names = [row["name"] for row in parse_jsonl(operations)]
+    assert names == ["Source/managed/stream", "Measurement/managed/one"]
+
+    pinned = dict(referencer, data={"evidence": "Source/managed/stream@v3"})
+    operations, _ = reconcile([pinned, referenced], [], policy)
+    names = [row["name"] for row in parse_jsonl(operations)]
+    assert names == ["Source/managed/stream", "Measurement/managed/one"]
+
+
+def test_addition_reference_cycles_fail_closed() -> None:
+    first = {
+        "kind": "thing",
+        "shape": "Person",
+        "wref": "Person/managed/a",
+        "data": {"peer": "Person/managed/b"},
+    }
+    second = {
+        "kind": "thing",
+        "shape": "Person",
+        "wref": "Person/managed/b",
+        "data": {"peer": "Person/managed/a"},
+    }
+    policy = ScopePolicy("warmhub-data/example", "*/managed/**", False, "preserve")
+
+    with pytest.raises(KernelError, match="reference cycle"):
+        reconcile([first, second], [], policy)
