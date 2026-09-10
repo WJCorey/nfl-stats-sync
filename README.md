@@ -1,3 +1,21 @@
+# nfl-stats-sync
+
+A Mushroom (Dagster + WarmHub) project that keeps the public WarmHub
+repository **`agentgm/nfl-stats`** fresh during the 2026 NFL season from
+nflverse data, with grounding 4.0 provenance (`Source`/`SourceArtifact` and a
+committed canonical-artifact ledger under `artifacts/`).
+
+- Project contract, decisions, and operator runbook: [`project/SPEC.md`](project/SPEC.md)
+- Canonicalization policy `agentgm-nflverse-canonical-jsonl/v1`: [`project/canonicalization.py`](project/canonicalization.py)
+- Automation (stopped/gated by default): [`src/mushroom/defs/nflstats_automation.py`](src/mushroom/defs/nflstats_automation.py) and [`.github/workflows/sync.yml`](.github/workflows/sync.yml)
+
+Statistical data via the [nflverse project](https://github.com/nflverse/nflverse-data)
+(nflverse-data), licensed [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Not affiliated with the NFL.
+
+The Mushroom guidebook and operating model below are unchanged from the
+template.
+
 # Mushroom
 
 Mushroom is a library that simplifies publishing source data on a consistent basis to a WarmHub repository. Mushroom uses [Dagster](https://dagster.io/) to orchestrate data acquisition and processing, and uses WarmHub's Python SDK to submit updates.
