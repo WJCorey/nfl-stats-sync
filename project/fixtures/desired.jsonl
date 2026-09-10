@@ -1,0 +1,2 @@
+{"data":{"label":"Alpha current"},"kind":"thing","shape":"ExampleRecord","wref":"ExampleRecord/example/alpha"}
+{"data":{"label":"Beta"},"kind":"thing","shape":"ExampleRecord","wref":"ExampleRecord/example/beta"}

@@ -1,0 +1,20 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --group dev
+      - run: uv run pytest
+      - run: uv run dg check defs
+      - run: uv run dg check toml
+      - run: MUSHROOM_HOME="$RUNNER_TEMP/mushroom" uv run dg launch --job prepare_sync

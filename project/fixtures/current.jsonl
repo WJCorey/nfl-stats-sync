@@ -1,0 +1,2 @@
+{"active":true,"data":{"label":"Alpha old"},"kind":"thing","shape":"ExampleRecord","version":1,"wref":"ExampleRecord/example/alpha"}
+{"active":true,"data":{"label":"Gamma preserved"},"kind":"thing","shape":"ExampleRecord","version":2,"wref":"ExampleRecord/example/gamma"}

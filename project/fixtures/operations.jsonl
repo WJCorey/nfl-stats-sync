@@ -1,0 +1,2 @@
+{"data":{"label":"Beta"},"kind":"thing","name":"ExampleRecord/example/beta","operation":"add"}
+{"data":{"label":"Alpha current"},"expectedVersion":1,"kind":"thing","name":"ExampleRecord/example/alpha","operation":"revise"}
