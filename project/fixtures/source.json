@@ -1,1 +1,220 @@
-{"complete":false,"records":[{"id":"alpha","label":"Alpha current"},{"id":"beta","label":"Beta"}]}
+{
+  "absentStreams": [],
+  "complete": false,
+  "exclusions": {
+    "ff-playerids": 0,
+    "player-stats/2026": 1,
+    "players": 0,
+    "schedules/2026": 0,
+    "team-stats/2026": 0
+  },
+  "ledger": {
+    "ff-playerids": {
+      "acceptedAt": "2026-09-09T12:00:00Z",
+      "byteLength": 348,
+      "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
+      "durableUri": "https://github.com/warmautomation/nfl-stats-sync/releases/download/artifacts/ff-playerids-6ffee57f4b6e407e.jsonl",
+      "mediaType": "application/x-ndjson",
+      "originalUrl": "https://github.com/dynastyprocess/data/raw/master/files/db_playerids.csv",
+      "recordCount": 3,
+      "semanticSha256": "6ffee57f4b6e407e4267537f627e07f37e6bef72df430467eb76838ea182f4ee"
+    },
+    "player-stats/2026": {
+      "acceptedAt": "2026-09-09T12:00:00Z",
+      "byteLength": 761,
+      "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
+      "durableUri": "https://github.com/warmautomation/nfl-stats-sync/releases/download/artifacts/player-stats-2026-20b666b4971ee1de.jsonl",
+      "mediaType": "application/x-ndjson",
+      "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.parquet",
+      "recordCount": 2,
+      "semanticSha256": "20b666b4971ee1de630f9272dae9dc36191b28c7ad7b5dc959b34f828d3e0549",
+      "sourcePublishedAt": "2026-09-09T10:00:00Z"
+    },
+    "players": {
+      "acceptedAt": "2026-09-09T12:00:00Z",
+      "byteLength": 387,
+      "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
+      "durableUri": "https://github.com/warmautomation/nfl-stats-sync/releases/download/artifacts/players-f6499ffeb7273975.jsonl",
+      "mediaType": "application/x-ndjson",
+      "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/players/players.parquet",
+      "recordCount": 2,
+      "semanticSha256": "f6499ffeb72739752e7b2dd0093bc5ef85a3b228e418c8a8d69dedc4fa396806",
+      "sourcePublishedAt": "2026-09-09T10:00:00Z"
+    },
+    "schedules/2026": {
+      "acceptedAt": "2026-09-09T12:00:00Z",
+      "byteLength": 420,
+      "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
+      "durableUri": "https://github.com/warmautomation/nfl-stats-sync/releases/download/artifacts/schedules-2026-88c81e64307a94cb.jsonl",
+      "mediaType": "application/x-ndjson",
+      "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.parquet",
+      "recordCount": 2,
+      "semanticSha256": "88c81e64307a94cb59d05775adc9d1386a99d1986b1337626e8808fd5926499f",
+      "sourcePublishedAt": "2026-09-09T10:00:00Z"
+    },
+    "team-stats/2026": {
+      "acceptedAt": "2026-09-09T12:00:00Z",
+      "byteLength": 396,
+      "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
+      "durableUri": "https://github.com/warmautomation/nfl-stats-sync/releases/download/artifacts/team-stats-2026-e1f8ad1580189765.jsonl",
+      "mediaType": "application/x-ndjson",
+      "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2026.parquet",
+      "recordCount": 2,
+      "semanticSha256": "e1f8ad1580189765e56d8e3fa74daef337f99dfdcaf9e5ae88835a961536729e",
+      "sourcePublishedAt": "2026-09-09T10:00:00Z"
+    }
+  },
+  "policy": "agentgm-nflverse-canonical-jsonl/v1",
+  "streams": {
+    "ff-playerids": [
+      {
+        "db_season": 2025,
+        "gsis_id": "00-0033873",
+        "mfl_id": "11111",
+        "sleeper_id": "9999",
+        "yahoo_id": "1"
+      },
+      {
+        "cbs_id": "2142052",
+        "db_season": 2026,
+        "fantasypros_id": "16413",
+        "gsis_id": "00-0033873",
+        "mfl_id": "13116",
+        "sleeper_id": "4046",
+        "sportradar_id": "11cad59d-90dd-449c-a839-dddaba4fe16c",
+        "yahoo_id": "30123"
+      },
+      {
+        "db_season": 2026,
+        "mfl_id": "17999",
+        "sleeper_id": "12000"
+      }
+    ],
+    "player-stats/2026": [
+      {
+        "attempts": 39,
+        "carries": 6,
+        "completions": 24,
+        "def_sacks": 0,
+        "fantasy_points": 26.02,
+        "fantasy_points_ppr": 26.02,
+        "fumble_recovery_own": 1,
+        "fumble_recovery_yards_own": 1,
+        "opponent_team": "LAC",
+        "passing_air_yards": 271,
+        "passing_epa": 12.345678,
+        "passing_first_downs": 9,
+        "passing_interceptions": 0,
+        "passing_tds": 1,
+        "passing_yards": 258,
+        "passing_yards_after_catch": 116,
+        "player_id": "00-0033873",
+        "rushing_first_downs": 5,
+        "rushing_tds": 1,
+        "rushing_yards": 57,
+        "sack_yards_lost": -9,
+        "sacks_suffered": 2,
+        "season": 2026,
+        "season_type": "REG",
+        "team": "KC",
+        "week": 1
+      },
+      {
+        "fantasy_points": 6.3,
+        "fantasy_points_ppr": 11.3,
+        "opponent_team": "KC",
+        "player_id": "00-0099999",
+        "receiving_tds": 0,
+        "receiving_yards": 63,
+        "receptions": 5,
+        "season": 2026,
+        "season_type": "REG",
+        "targets": 7,
+        "team": "LAC",
+        "week": 1,
+        "wopr": 0.4567
+      }
+    ],
+    "players": [
+      {
+        "birth_date": "1995-09-17",
+        "college_name": "Texas Tech",
+        "display_name": "Patrick Mahomes",
+        "espn_id": "3139477",
+        "gsis_id": "00-0033873",
+        "pfr_id": "MahoPa00",
+        "position": "QB",
+        "position_group": "QB",
+        "status": "ACT"
+      },
+      {
+        "birth_date": "2003-04-01",
+        "college_name": "State U",
+        "display_name": "Rook E. Wideout",
+        "espn_id": "4999999",
+        "gsis_id": "00-0099999",
+        "position": "WR",
+        "position_group": "WR",
+        "status": "ACT"
+      }
+    ],
+    "schedules/2026": [
+      {
+        "away_score": 21,
+        "away_team": "KC",
+        "espn": "401999001",
+        "game_id": "2026_01_KC_LAC",
+        "game_type": "REG",
+        "gameday": "2026-09-13",
+        "home_score": 27,
+        "home_team": "LAC",
+        "old_game_id": "2026091300",
+        "pfr": "202609130sdg",
+        "season": 2026,
+        "spread_line": -2.5,
+        "week": 1
+      },
+      {
+        "away_team": "DEN",
+        "espn": "401999002",
+        "game_id": "2026_02_KC_DEN",
+        "game_type": "REG",
+        "gameday": "2026-09-20",
+        "home_team": "KC",
+        "old_game_id": "2026092000",
+        "season": 2026,
+        "week": 2
+      }
+    ],
+    "team-stats/2026": [
+      {
+        "attempts": 39,
+        "completions": 24,
+        "def_sack_yards": 11,
+        "def_sacks": 1.5,
+        "opponent_team": "LAC",
+        "passing_yards": 258,
+        "penalties": 5,
+        "penalty_yards": 45,
+        "season": 2026,
+        "season_type": "REG",
+        "team": "KC",
+        "week": 1
+      },
+      {
+        "attempts": 30,
+        "completions": 18,
+        "def_sack_yards": 14,
+        "def_sacks": 2,
+        "opponent_team": "KC",
+        "passing_yards": 201,
+        "penalties": 3,
+        "penalty_yards": 25,
+        "season": 2026,
+        "season_type": "REG",
+        "team": "LAC",
+        "week": 1
+      }
+    ]
+  }
+}
