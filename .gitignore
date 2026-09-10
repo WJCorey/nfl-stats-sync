@@ -211,3 +211,4 @@ __marimo__/
 # Releases by scripts/publish_artifacts.sh; the committed identity lives in
 # artifacts/ledger.json
 artifacts/staged/
+live-read.yaml

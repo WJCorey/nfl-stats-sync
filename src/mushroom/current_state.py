@@ -57,7 +57,11 @@ def capture_current_state(client: _Client, *, target: str, pattern: str) -> tupl
             limit=500,
         )
         for source in (item.as_dict(),)
-        if _matches_scope(source, pattern)
+        # The server's kind=thing drain may also return collections (a
+        # collection is a thing), which would surface the same durable
+        # identity twice across drains. Keep each row only in the drain
+        # whose requested kind matches its reported kind.
+        if source.get("kind") == kind and _matches_scope(source, pattern)
     ]
     if not sources:
         return canonical_current_state(())

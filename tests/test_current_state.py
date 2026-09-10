@@ -225,3 +225,40 @@ def test_canonical_current_state_rejects_invalid_sdk_rows(
 ) -> None:
     with pytest.raises(CurrentStateError):
         canonical_current_state(rows)
+
+
+def test_live_current_state_deduplicates_collections_returned_by_the_thing_drain() -> None:
+    # Observed on prod 2026-09-10: the server's kind=thing HEAD drain also
+    # returns collections (a collection is a thing), so the same durable
+    # identity arrived from both the thing and collection drains and tripped
+    # the duplicate-identity guard. Each drain must keep only rows whose
+    # reported kind matches the requested kind.
+    collection_row = {
+        "kind": "collection",
+        "shapeName": "Set",
+        "wref": "Set/managed/release",
+        "version": 1,
+        "active": True,
+        "metadata": {"durableId": "set-durable-id"},
+        "data": {"members": []},
+    }
+
+    def head_iter(**options: object) -> list[SimpleNamespace]:
+        if options["kind"] in ("thing", "collection"):
+            return [SimpleNamespace(as_dict=lambda: dict(collection_row))]
+        return []
+
+    things = SimpleNamespace(head_iter=head_iter)
+    client = SimpleNamespace(
+        shape=SimpleNamespace(
+            list=lambda org, repo: SimpleNamespace(items=[])
+        ),
+        repository=lambda target: SimpleNamespace(things=things),
+    )
+
+    count, payload = capture_current_state(
+        client, target="example/repo", pattern="*/managed/**"
+    )
+
+    assert count == 1
+    assert [row["wref"] for row in parse_jsonl(payload)] == ["Set/managed/release"]
