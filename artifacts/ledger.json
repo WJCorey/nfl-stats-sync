@@ -21,26 +21,26 @@
     "sourcePublishedAt": "2026-09-18T13:46:07Z"
   },
   "players": {
-    "acceptedAt": "2026-09-18T14:38:45Z",
-    "byteLength": 16928318,
+    "acceptedAt": "2026-09-19T13:59:50Z",
+    "byteLength": 16996107,
     "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
-    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/players-e70060232335cbbc.jsonl",
+    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/players-6a7ac8237e6e978e.jsonl",
     "mediaType": "application/x-ndjson",
     "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/players/players.parquet",
-    "recordCount": 24706,
-    "semanticSha256": "e70060232335cbbc519e1dedb05662e55ad74263934273c47bbb87ed10b925ba",
-    "sourcePublishedAt": "2026-09-18T12:34:30Z"
+    "recordCount": 24830,
+    "semanticSha256": "6a7ac8237e6e978ea72cebf9bb229ba4528e9c87272640ff50d4ad6707940439",
+    "sourcePublishedAt": "2026-09-19T12:14:29Z"
   },
   "schedules/2026": {
-    "acceptedAt": "2026-09-18T14:38:44Z",
-    "byteLength": 135812,
+    "acceptedAt": "2026-09-19T13:59:49Z",
+    "byteLength": 137601,
     "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
-    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/schedules-2026-64421f694f2de171.jsonl",
+    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/schedules-2026-f2fe5306c312c749.jsonl",
     "mediaType": "application/x-ndjson",
     "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.parquet",
     "recordCount": 272,
-    "semanticSha256": "64421f694f2de171fa1e3f95250fae2dbe937138757a61aa0785350e04c4fca0",
-    "sourcePublishedAt": "2026-09-18T13:47:05Z"
+    "semanticSha256": "f2fe5306c312c749c58eef770a6d53cfdacf80da2565e698993dc0ac1ca65090",
+    "sourcePublishedAt": "2026-09-19T11:36:31Z"
   },
   "team-stats/2026": {
     "acceptedAt": "2026-09-18T14:38:44Z",
