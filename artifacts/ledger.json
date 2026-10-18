@@ -21,26 +21,26 @@
     "sourcePublishedAt": "2026-10-17T12:59:03Z"
   },
   "players": {
-    "acceptedAt": "2026-10-17T13:54:43Z",
-    "byteLength": 17027601,
+    "acceptedAt": "2026-10-18T14:09:25Z",
+    "byteLength": 17027358,
     "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
-    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/players-95f1dae3c4404d48.jsonl",
+    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/players-b081bddaae17561c.jsonl",
     "mediaType": "application/x-ndjson",
     "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/players/players.parquet",
     "recordCount": 24854,
-    "semanticSha256": "95f1dae3c4404d484ca469c9d94860eb63dd1f8a7d8a18d16939e516be76c262",
-    "sourcePublishedAt": "2026-10-17T11:55:21Z"
+    "semanticSha256": "b081bddaae17561c279f54c5ae1829a762389ffc0593d07a6014dd17dd627d5a",
+    "sourcePublishedAt": "2026-10-18T12:21:15Z"
   },
   "schedules/2026": {
-    "acceptedAt": "2026-10-17T13:54:42Z",
-    "byteLength": 160947,
+    "acceptedAt": "2026-10-18T14:09:24Z",
+    "byteLength": 160956,
     "canonicalizationPolicy": "agentgm-nflverse-canonical-jsonl/v1",
-    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/schedules-2026-085acc22beeac3fb.jsonl",
+    "durableUri": "https://github.com/WJCorey/nfl-stats-sync/releases/download/artifacts/schedules-2026-306ed29f1aa4a92c.jsonl",
     "mediaType": "application/x-ndjson",
     "originalUrl": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.parquet",
     "recordCount": 272,
-    "semanticSha256": "085acc22beeac3fbfcb35f566738a4c15a70a39651eebe05841093b0ce88f1e8",
-    "sourcePublishedAt": "2026-10-17T13:16:32Z"
+    "semanticSha256": "306ed29f1aa4a92ce0fad177058cff7a81710360be6431bb29c65055e40f3cb0",
+    "sourcePublishedAt": "2026-10-18T14:06:18Z"
   },
   "team-stats/2026": {
     "acceptedAt": "2026-10-17T13:54:42Z",
