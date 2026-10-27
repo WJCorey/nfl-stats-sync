@@ -13,8 +13,9 @@ Statistical data via the [nflverse project](https://github.com/nflverse/nflverse
 (nflverse-data), licensed [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 Not affiliated with the NFL.
 
-The Mushroom guidebook and operating model below are unchanged from the
-template.
+This project uses the native v2 WarmHub contract with Python SDK `0.27.4`.
+Migration provenance, identity mapping, and rollout checks are recorded in
+[`project/SPEC.md`](project/SPEC.md#native-v2-migration-2026-10-27).
 
 # Mushroom
 

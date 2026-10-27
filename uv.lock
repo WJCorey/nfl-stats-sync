@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10, <3.15"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -84,11 +84,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2026.7.22"
+version = "2026.10.23"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz", hash = "sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55", size = 138112, upload-time = "2026-07-22T03:35:12.644Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/11/b524cbd9bbdaca58608e4cf4053fd463417549e1959fa8d3aa18319f9555/certifi-2026.10.23.tar.gz", hash = "sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd", size = 136225, upload-time = "2026-10-23T11:36:16.478Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/certifi-2026.7.22-py3-none-any.whl", hash = "sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775", size = 136983, upload-time = "2026-07-22T03:35:11.276Z" },
+    { url = "https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl", hash = "sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1", size = 135082, upload-time = "2026-10-23T11:36:14.763Z" },
 ]
 
 [[package]]
@@ -646,7 +646,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -1314,7 +1314,7 @@ dev = [
 requires-dist = [
     { name = "dagster", specifier = "==1.13.17" },
     { name = "duckdb", specifier = "==1.5.5" },
-    { name = "warmhub", specifier = "==0.5.1" },
+    { name = "warmhub", specifier = "==0.27.4" },
 ]
 
 [package.metadata.requires-dev]
@@ -2468,15 +2468,16 @@ wheels = [
 
 [[package]]
 name = "warmhub"
-version = "0.5.1"
+version = "0.27.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "certifi" },
     { name = "httpx" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/e8/9795bc7ce4fbe76cc2796a2a065b3989dee203862d545539222cb52de5b3/warmhub-0.5.1.tar.gz", hash = "sha256:f3c05bad1094ce9b2b385fb2e4639477f58a67f32bb2b39efb20672400e69794", size = 285274, upload-time = "2026-08-17T17:18:10.487Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/8d/86547ac0011700f27b1934fe1890f528af7212235d31768ffae43ee8bd88/warmhub-0.27.4.tar.gz", hash = "sha256:b1535e411597a1d02f683cf547f9acb7928fded705fb084cba3b7bc42cd75666", size = 384130, upload-time = "2026-10-23T14:51:39.159Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/cd/6415ba1c5f5f9555d6c5c6bc32403bc92f77027ad77bd2daa4c9c8a13c7a/warmhub-0.5.1-py3-none-any.whl", hash = "sha256:ae31ef2c206d45c05c957848eef959fc8baba70b2bb2de786a939134dd4c214c", size = 348121, upload-time = "2026-08-17T17:18:08.773Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/0d/783052bf5886067f99af260ed67c16fa48d5908a849d92855ba4c05d7fc1/warmhub-0.27.4-py3-none-any.whl", hash = "sha256:f56e8596290f06454203a6eb8ba6ee617998b0506c4e30cd040cfe6a57bc3834", size = 465430, upload-time = "2026-10-23T14:51:37.55Z" },
 ]
 
 [[package]]

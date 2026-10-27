@@ -1,5 +1,7 @@
 # Review a plan
 
+Server validation checks operation and effect warnings before each apply. Any nonempty warning channel requires review and replanning, including ignored identity-binding pins. If an apply still returns warnings, Mushroom preserves its actual status, version and warning contents, stops later batches, and retains pending evidence; an acknowledged write is not rolled back. Empty warning envelopes do not block acceptance.
+
 Run the credential-free path first:
 
 ```bash
@@ -30,7 +32,7 @@ jq -s 'group_by(.operation) | map({operation: .[0].operation, count: length})' \
 
 The first command opens the plan details—including its target, managed scope, absence policy, and summary counts. The second counts each kind of planned operation.
 
-Collection adds deliberately use a bare collection name on the WarmHub wire; collection revisions and retractions use their full Wref. Review the persisted operation bytes, not an assumed reconstruction of that projection.
+Every operation uses the same independent Thing name. Adds and revisions include explicit `shapes` and ordinary `data`; revisions and retractions carry expected versions. Review the persisted operation bytes, including declaration changes, not an assumed reconstruction of their projection.
 
 Ask these questions before live validation:
 
@@ -41,6 +43,7 @@ Ask these questions before live validation:
 5. Does every retraction have complete coverage and explicit authorization?
 6. Are preserved records expected consequences of incomplete coverage?
 7. Does the target in the plan manifest match the intended repository?
+8. If the plan policy `allowShapeChanges` is enabled, are all declaration transitions explicitly reviewed and owned by this project?
 
 A zero-retraction plan can still be semantically wrong. A human reviews what the records mean, not only whether the files are valid.
 

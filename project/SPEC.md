@@ -1,3 +1,53 @@
+# Native v2 migration (2026-10-27)
+
+This checkout pins Python SDK `warmhub==0.27.4` and ports the native Mushroom
+reader, planner, reference handling, and submission migration from
+[`warmautomation/mushroom@32adf18`](https://github.com/warmautomation/mushroom/commit/32adf18f292be43333f435c8b1974f8f98615a80)
+([upstream PR #13](https://github.com/warmautomation/mushroom/pull/13)). The
+unrelated upstream artifact-retention feature is excluded. Older design and
+run receipts below remain historical evidence.
+
+`project/domain.py` emits `{name, shapes, data}`. Read-only production
+inspection on 2026-10-27 confirmed SourceArtifact names `players`,
+`schedules/2026`, and `team-stats/2026`, with the Source reference resolving
+to `nflverse`. The v2 identity crosswalk retains the identifier after the old
+Shape prefix: Player and Game retain their source IDs, stats retain
+`season/week/id-or-team`, and SourceArtifact retains its stream name.
+Declarations are explicit; typed references follow the same crosswalk.
+Source IDs, canonical source artifacts, hashes, and ledger locators are unchanged.
+
+`MANAGED_SCOPE="**"` includes bare and hierarchical names. Desired records
+still pass the reviewed Shape-specific scope check. `complete=false` and
+`preserve` never retract absent records. `ALLOW_SHAPE_CHANGES=False` refuses
+unreviewed declaration changes; `REQUIRE_EXISTING_RECORDS=True` refuses an
+unexpectedly empty capture of this populated target. The planner orders
+writes by typed references and preserves existing version pins for unchanged
+references. Old desired/current files and operation plans must be regenerated;
+the v2 writer rejects the legacy grammar.
+
+`project/shape-fields.json` records reference bindings observed read-only on
+2026-10-27: Player v2, Game v2, PlayerGameStats v3, TeamGameStats v4, Source v1,
+SourceArtifact v1, Team v1, and StatSource v1. Only reference fields require
+normalization; scalar fields remain untouched. Fresh current capture retains
+full validation certificates and their contracts. Changing an existing
+reference binding requires a reviewed schema migration.
+
+The four historical fixture records are represented in native grammar,
+preserving bodies and versions. The frozen plan still produces 12 adds,
+1 revision, 0 retractions, 1 unchanged, and 2 preserved records. The 2025
+stats record and legacy StatSource remain outside all operations. The source
+fixture and committed artifact ledger are unchanged.
+
+Before rollout: pause/drain the existing single writer, preserve its
+`.mushroom` evidence, capture fresh native state using the read-only recipe,
+review additions/revisions and current Shape contracts, then perform an
+approved throwaway-target rehearsal with fresh zero-residual readback.
+Never replay an old plan. Production synchronization and resuming writers
+remain separate operator steps. This migration PR makes no production writes
+or deployments.
+
+---
+
 # agentgm/nfl-stats — 2026 season Mushroom synchronization
 
 Keeps the populated public WarmHub repository **`agentgm/nfl-stats`** (124,073

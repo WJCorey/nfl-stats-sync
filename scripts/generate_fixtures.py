@@ -161,6 +161,7 @@ def main() -> None:
             FIXTURES / "current.jsonl",
             operations_path,
             ScopePolicy("agentgm/nfl-stats", domain.MANAGED_SCOPE, False, domain.ABSENCE_POLICY),
+            reference_fields=domain.SHAPE_FIELDS,
         )
         (FIXTURES / "operations.jsonl").write_bytes(operations_path.read_bytes())
     summary = result.summary

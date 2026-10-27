@@ -7,7 +7,7 @@ It teaches Mushroom's safety loop and the small set of Dagster CLI commands that
 ## Words used in this guide
 
 - A **Shape** is a WarmHub record type.
-- A **Wref** is a stable record name.
+- A **name** identifies a Thing independently of its declared Shapes.
 - **Desired state** is the set of records the source says should exist.
 - **Current state** is what WarmHub contains now.
 - A **synchronization unit** is what one successful run claims is correct.

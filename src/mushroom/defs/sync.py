@@ -54,6 +54,8 @@ def _policy(source: bytes) -> ScopePolicy:
         pattern=domain.MANAGED_SCOPE,
         complete=json.loads(source)["complete"],
         absence=domain.ABSENCE_POLICY,
+        allow_shape_changes=domain.ALLOW_SHAPE_CHANGES,
+        require_existing_records=domain.REQUIRE_EXISTING_RECORDS,
     )
 
 
@@ -70,7 +72,9 @@ def _plan_is_persisted(store: LocalArtifactStore) -> bool:
         manifest = json.loads(manifest_payload)
     except (KernelError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    return isinstance(manifest, dict) and manifest.get("operations") == operations_reference.sha256
+    return (isinstance(manifest, dict)
+            and manifest.get("format") == "mushroom-plan/v2"
+            and manifest.get("operations") == operations_reference.sha256)
 
 
 @dg.asset(config_schema={"live": dg.Field(bool, default_value=False)}, group_name="synchronization")
@@ -137,27 +141,33 @@ def operation_plan() -> dg.MaterializeResult:
     current_reference = store.reference("current")
     _, current_source_payload = store.resolve("current-source")
     policy = _policy(source)
+    shape_fields = json.loads(canonical_json(domain.SHAPE_FIELDS))
     with TemporaryDirectory(prefix="mushroom-plan-") as scratch:
         root = Path(scratch)
         desired_path, current_path, operations_path = root / "desired.jsonl", root / "current.jsonl", root / "operations.jsonl"
         store.copy(desired_reference, desired_path)
         store.copy(current_reference, current_path)
-        result = reconcile(desired_path, current_path, operations_path, policy)
+        result = reconcile(desired_path, current_path, operations_path, policy,
+                           reference_fields=shape_fields)
         payload = operations_path.read_bytes()
     summary = result.summary
     operations_reference = store.persist(payload)
     if operations_reference.sha256 != result.sha256 or operations_reference.byte_length != result.byte_length:
         raise RuntimeError("planner output identity changed during persistence")
     manifest = {
+        "format": "mushroom-plan/v2",
         "current": current_reference.sha256,
         "currentSource": json.loads(current_source_payload)["source"],
         "desired": desired_reference.sha256,
+        "shapeFields": shape_fields,
         "operations": operations_reference.sha256,
         "source": source_reference.sha256,
         "policy": {
             "absence": policy.absence,
+            "allowShapeChanges": policy.allow_shape_changes,
             "complete": policy.complete,
             "managedScope": policy.pattern,
+            "requireExistingRecords": policy.require_existing_records,
             "target": policy.target,
         },
         "summary": {
@@ -291,8 +301,13 @@ def synchronization_results(context: dg.AssetExecutionContext) -> dg.Materialize
 def readback_state(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
     """A fresh complete managed SDK read after submission."""
 
-    record_count, payload = _capture_live_current_state(context)
     store = _store()
+    _, manifest_payload = store.resolve("plan")
+    reviewed_policy = json.loads(manifest_payload)["policy"]
+    record_count, payload = capture_current_state(
+        _enabled_client(context), target=reviewed_policy["target"],
+        pattern=reviewed_policy["managedScope"],
+    )
     reference = store.persist(payload)
     store.publish("readback", reference)
     return dg.MaterializeResult(metadata={"records": record_count})
@@ -306,6 +321,19 @@ def residual_plan() -> dg.MaterializeResult:
     source_reference, source = store.resolve("source")
     desired_reference = store.reference("desired")
     readback_reference = store.reference("readback")
+    _, manifest_payload = store.resolve("plan")
+    manifest = json.loads(manifest_payload)
+    if manifest["desired"] != desired_reference.sha256 or manifest["source"] != source_reference.sha256:
+        raise KernelError("readback inputs differ from the reviewed plan")
+    reviewed_fields = manifest["shapeFields"]
+    saved_policy = manifest["policy"]
+    policy = ScopePolicy(
+        target=saved_policy["target"], pattern=saved_policy["managedScope"],
+        complete=saved_policy["complete"], absence=saved_policy["absence"],
+        allow_shape_changes=saved_policy["allowShapeChanges"],
+        # The baseline guard applies before writes; a complete retraction may empty it.
+        require_existing_records=False,
+    )
     with TemporaryDirectory(prefix="mushroom-residual-") as scratch:
         root = Path(scratch)
         desired_path, current_path, operations_path = (
@@ -315,7 +343,8 @@ def residual_plan() -> dg.MaterializeResult:
         )
         store.copy(desired_reference, desired_path)
         store.copy(readback_reference, current_path)
-        result = reconcile(desired_path, current_path, operations_path, _policy(source))
+        result = reconcile(desired_path, current_path, operations_path, policy,
+                           reference_fields=reviewed_fields)
         payload = operations_path.read_bytes()
     reference = store.persist(payload)
     if reference.sha256 != result.sha256 or reference.byte_length != result.byte_length:
