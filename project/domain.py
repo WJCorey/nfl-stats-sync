@@ -1,8 +1,8 @@
 """agentgm/nfl-stats naming authority and transform.
 
 Keeps the WarmHub repo ``agentgm/nfl-stats`` fresh during the 2026 NFL season
-from nflverse data. Identity formulas and transform decisions are ported
-verbatim from the approved one-shot ingest (``ingest/build_jsonl.py`` in the
+from nflverse data. Source identifiers and transform decisions are ported
+from the approved one-shot ingest (``ingest/build_jsonl.py`` in the
 agentgm workspace); grounding provenance follows the grounding 4.0 contract
 (Source/SourceArtifact). See ``project/SPEC.md`` for the reviewed decisions.
 """
@@ -32,7 +32,11 @@ TARGET = "example/mushroom-starter"
 # ``_assert_project_scope`` on every desired record. ABSENCE_POLICY is
 # "preserve", so the wide kernel scope can never authorize a retraction; its
 # only live effect is a whole-repository current-state read.
-MANAGED_SCOPE = "*/**"
+MANAGED_SCOPE = "**"
+ALLOW_SHAPE_CHANGES = False
+REQUIRE_EXISTING_RECORDS = True
+# Reference bindings observed read-only on 2026-10-27; scalar fields need no normalization.
+SHAPE_FIELDS = json.loads((Path(__file__).parent / "shape-fields.json").read_text())
 ABSENCE_POLICY = "preserve"
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -47,8 +51,8 @@ _GAME_ID = re.compile(r"^[0-9]{4}_[0-9]{2}_[A-Z]{2,3}_[A-Z]{2,3}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _HTTPS_URL = re.compile(r"^https://[^@\s#]+$")
 
-SOURCE_WREF = "Source/nflverse"
-# Verbatim current prod state of Source/nflverse@v1 (read back 2026-09-10); an
+SOURCE_WREF = "nflverse"
+# Verbatim current prod body of the Source Thing nflverse@v1 (2026-09-10); an
 # unchanged emission keeps the Thing unrevised.
 SOURCE_DATA = {
     "publisherName": "nflverse project (open-source NFL data community)",
@@ -78,7 +82,7 @@ def current_state_fixture() -> Path:
 
 
 # --------------------------------------------------------------------------
-# Naming authority (formulas continue the identities already live on prod)
+# Naming authority (native v2 names observed on the populated target)
 # --------------------------------------------------------------------------
 
 
@@ -101,7 +105,7 @@ def _require_season(value: object) -> int:
 
 
 def player_wref(gsis_id: object) -> str:
-    return f"Player/{_require_id(gsis_id, _GSIS_ID, 'gsis_id')}"
+    return _require_id(gsis_id, _GSIS_ID, "gsis_id")
 
 
 def team_abbr(value: object) -> str:
@@ -109,40 +113,39 @@ def team_abbr(value: object) -> str:
 
 
 def game_wref(game_id: object) -> str:
-    return f"Game/{_require_id(game_id, _GAME_ID, 'game_id')}"
+    return _require_id(game_id, _GAME_ID, "game_id")
 
 
 def player_game_stats_wref(season: object, week: object, gsis_id: object) -> str:
     gsis = _require_id(gsis_id, _GSIS_ID, "gsis_id")
-    return f"PlayerGameStats/{_require_season(season)}/{_require_week(week):02d}/{gsis}"
+    return f"{_require_season(season)}/{_require_week(week):02d}/{gsis}"
 
 
 def team_game_stats_wref(season: object, week: object, team: object) -> str:
     abbr = team_abbr(team)
-    return f"TeamGameStats/{_require_season(season)}/{_require_week(week):02d}/{abbr}"
+    return f"{_require_season(season)}/{_require_week(week):02d}/{abbr}"
 
 
 def source_artifact_wref(stream: object) -> str:
-    if stream not in STREAMS:
+    if not isinstance(stream, str) or stream not in STREAMS:
         raise DomainError(f"unknown source artifact stream: {stream!r}")
-    return f"SourceArtifact/{stream}"
+    return stream
 
 
-def _assert_project_scope(wref: str) -> None:
-    """Enforce the six-family semantic managed scope from SPEC.md."""
+def _assert_project_scope(name: str, shape: str) -> None:
+    """Enforce the reviewed Shape/name families using native v2 names."""
 
-    if wref == SOURCE_WREF:
+    if shape == "Source" and name == SOURCE_WREF:
         return
-    shape, _, rest = wref.partition("/")
-    if shape == "SourceArtifact" and rest in STREAMS:
+    if shape == "SourceArtifact" and name in STREAMS:
         return
-    if shape == "Player" and "/" not in rest and rest:
+    if shape == "Player" and _GSIS_ID.fullmatch(name):
         return
-    if shape == "Game" and rest.startswith(f"{SEASON}_"):
+    if shape == "Game" and _GAME_ID.fullmatch(name) and name.startswith(f"{SEASON}_"):
         return
-    if shape in {"PlayerGameStats", "TeamGameStats"} and rest.startswith(f"{SEASON}/"):
+    if shape in {"PlayerGameStats", "TeamGameStats"} and name.startswith(f"{SEASON}/"):
         return
-    raise DomainError(f"desired record outside the approved managed scope: {wref}")
+    raise DomainError(f"desired record outside the approved managed scope: {shape}/{name}")
 
 
 # --------------------------------------------------------------------------
@@ -227,7 +230,7 @@ def _clean(data: dict[str, object]) -> dict[str, object]:
 
 
 def _thing(shape: str, wref: str, data: dict[str, object]) -> dict[str, object]:
-    return {"kind": "thing", "shape": shape, "wref": wref, "data": _clean(data)}
+    return {"name": wref, "shapes": [shape], "data": _clean(data)}
 
 
 def _season_type(value: object) -> str:
@@ -269,11 +272,11 @@ def transform(source: bytes) -> list[dict[str, object]]:
 
     seen: set[str] = set()
     for record in records:
-        wref = record["wref"]
+        wref = record["name"]
         if wref in seen:
             raise DomainError(f"duplicate desired identity: {wref}")
         seen.add(wref)
-        _assert_project_scope(wref)
+        _assert_project_scope(wref, record["shapes"][0])
     return records
 
 
@@ -497,7 +500,7 @@ def _build_player_game_stats(
         data: dict[str, object] = {
             "playerWref": player_wref(gsis),
             "gameWref": game_wref(game_id),
-            "teamWref": f"Team/{team}",
+            "teamWref": team,
             "sourceArtifactWref": artifact,
             "season": season,
             "week": week,
@@ -521,7 +524,7 @@ def _build_team_game_stats(
         wref = team_game_stats_wref(season, week, team)
         game_id = _joined_game(lookup, season, week, team, f"team {team}")
         data: dict[str, object] = {
-            "teamWref": f"Team/{team}",
+            "teamWref": team,
             "gameWref": game_wref(game_id),
             "sourceArtifactWref": artifact,
             "season": season,

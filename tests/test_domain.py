@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import random
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from mushroom.kernel import ScopePolicy, canonical_jsonl, reconcile
+from mushroom.kernel import ScopePolicy, canonical_jsonl, parse_jsonl, reconcile
+from mushroom.references import map_reference_fields
 from project import domain
 from project.canonicalization import SEASON, canonicalize
 
@@ -48,15 +50,15 @@ def test_target_uses_environment_with_a_harmless_default(monkeypatch) -> None:
 
 
 def test_identity_formulas_continue_the_existing_prod_names() -> None:
-    assert domain.player_wref("00-0033873") == "Player/00-0033873"
-    assert domain.player_wref("ABB498348") == "Player/ABB498348"  # legacy pre-GSIS ids
-    assert domain.game_wref("2026_01_KC_LAC") == "Game/2026_01_KC_LAC"
+    assert domain.player_wref("00-0033873") == "00-0033873"
+    assert domain.player_wref("ABB498348") == "ABB498348"  # legacy pre-GSIS ids
+    assert domain.game_wref("2026_01_KC_LAC") == "2026_01_KC_LAC"
     assert (
         domain.player_game_stats_wref(SEASON, 1, "00-0033873")
-        == f"PlayerGameStats/{SEASON}/01/00-0033873"
+        == f"{SEASON}/01/00-0033873"
     )
-    assert domain.team_game_stats_wref(SEASON, 18, "KC") == f"TeamGameStats/{SEASON}/18/KC"
-    assert domain.source_artifact_wref("players") == "SourceArtifact/players"
+    assert domain.team_game_stats_wref(SEASON, 18, "KC") == f"{SEASON}/18/KC"
+    assert domain.source_artifact_wref("players") == "players"
 
 
 @pytest.mark.parametrize(
@@ -87,13 +89,15 @@ def test_seasons_outside_the_managed_scope_are_rejected(season: object) -> None:
 
 
 def test_records_outside_the_approved_scope_families_are_rejected() -> None:
-    for wref in ("Team/KC", "StatSource/nflverse-2026.07.02", "Game/2025_01_KC_LAC",
-                 f"PlayerGameStats/2025/01/00-0033873", "Content/readme", "Source/espn"):
+    for shape, name in [("Team", "KC"), ("StatSource", "nflverse-2026.07.02"),
+                        ("Game", "2025_01_KC_LAC"), ("PlayerGameStats", "2025/01/00-0033873"),
+                        ("Content", "readme"), ("Source", "espn")]:
         with pytest.raises(domain.DomainError, match="outside the approved managed scope"):
-            domain._assert_project_scope(wref)
-    for wref in ("Source/nflverse", "SourceArtifact/players", f"Game/{SEASON}_01_KC_LAC",
-                 "Player/00-0033873", f"PlayerGameStats/{SEASON}/01/00-0033873"):
-        domain._assert_project_scope(wref)
+            domain._assert_project_scope(name, shape)
+    for shape, name in [("Source", "nflverse"), ("SourceArtifact", "players"),
+                        ("Game", f"{SEASON}_01_KC_LAC"), ("Player", "00-0033873"),
+                        ("PlayerGameStats", f"{SEASON}/01/00-0033873")]:
+        domain._assert_project_scope(name, shape)
 
 
 # ---------------------------------------------------------------------------
@@ -115,38 +119,38 @@ def test_transform_is_deterministic_under_stream_row_reordering() -> None:
 
 
 def test_zero_omission_and_analytics_drop_are_ported_exactly() -> None:
-    records = {r["wref"]: r for r in domain.transform(domain.source_fixture().read_bytes())}
-    mahomes = records[f"PlayerGameStats/{SEASON}/01/00-0033873"]["data"]
+    records = {r["name"]: r for r in domain.transform(domain.source_fixture().read_bytes())}
+    mahomes = records[f"{SEASON}/01/00-0033873"]["data"]
     assert "passingInterceptions" not in mahomes  # zero count stat omitted
     assert "defSacks" not in mahomes  # 0.0 float omitted
     assert mahomes["sackYardsLost"] == -9  # nonzero negatives kept
     assert mahomes["fantasyPoints"] == 26.02
     assert not any(key.endswith("Epa") or key in {"pacr", "racr", "wopr"} for key in mahomes)
-    assert mahomes["sourceArtifactWref"] == f"SourceArtifact/player-stats/{SEASON}"
+    assert mahomes["sourceArtifactWref"] == f"player-stats/{SEASON}"
     assert "statSourceWref" not in mahomes  # new records carry grounding provenance only
-    rookie = records[f"PlayerGameStats/{SEASON}/01/00-0099999"]["data"]
+    rookie = records[f"{SEASON}/01/00-0099999"]["data"]
     assert "receivingTds" not in rookie and rookie["receptions"] == 5
 
 
 def test_players_carry_both_grounding_edges_and_the_crosswalk_dedupe_holds() -> None:
-    records = {r["wref"]: r for r in domain.transform(domain.source_fixture().read_bytes())}
-    mahomes = records["Player/00-0033873"]["data"]
-    assert mahomes["sourceArtifactWref"] == "SourceArtifact/players"
-    assert mahomes["crosswalkArtifactWref"] == "SourceArtifact/ff-playerids"
+    records = {r["name"]: r for r in domain.transform(domain.source_fixture().read_bytes())}
+    mahomes = records["00-0033873"]["data"]
+    assert mahomes["sourceArtifactWref"] == "players"
+    assert mahomes["crosswalkArtifactWref"] == "ff-playerids"
     assert mahomes["sleeperId"] == "4046"  # db_season 2026 row wins over 2025 duplicate
     assert mahomes["mflId"] == "13116"
 
 
 def test_source_artifact_things_derive_purely_from_the_ledger() -> None:
     envelope = _envelope()
-    records = {r["wref"]: r for r in domain.transform(_bytes(envelope))}
+    records = {r["name"]: r for r in domain.transform(_bytes(envelope))}
     for stream, row in envelope["ledger"].items():
-        data = records[f"SourceArtifact/{stream}"]["data"]
+        data = records[stream]["data"]
         assert data["semanticSha256"] == row["semanticSha256"]
         assert data["byteLength"] == row["byteLength"]
         assert data["durableUri"] == row["durableUri"]
         assert data["acceptedAt"] == row["acceptedAt"]
-        assert data["source"] == "Source/nflverse"
+        assert data["source"] == "nflverse"
         assert data["canonicalizationPolicy"] == "agentgm-nflverse-canonical-jsonl/v1"
         assert data["mediaType"] == "application/x-ndjson"
 
@@ -157,10 +161,10 @@ def test_absent_optional_stream_yields_no_artifact_and_no_records() -> None:
         del envelope["streams"][stream]
         del envelope["ledger"][stream]
     records = domain.transform(_bytes(envelope))
-    wrefs = {record["wref"] for record in records}
-    assert not any(wref.startswith(("PlayerGameStats/", "TeamGameStats/")) for wref in wrefs)
-    assert f"SourceArtifact/player-stats/{SEASON}" not in wrefs
-    assert f"SourceArtifact/schedules/{SEASON}" in wrefs
+    wrefs = {record["name"] for record in records}
+    assert not any(set(record["shapes"]) & {"PlayerGameStats", "TeamGameStats"} for record in records)
+    assert f"player-stats/{SEASON}" not in wrefs
+    assert f"schedules/{SEASON}" in wrefs
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +245,7 @@ def test_fixture_plan_preserves_out_of_scope_history(tmp_path: Path) -> None:
         domain.current_state_fixture(),
         operations_path,
         ScopePolicy("agentgm/nfl-stats", domain.MANAGED_SCOPE, False, domain.ABSENCE_POLICY),
+        reference_fields=domain.SHAPE_FIELDS,
     )
 
     assert operations_path.read_bytes() == (
@@ -258,6 +263,41 @@ def test_fixture_plan_preserves_out_of_scope_history(tmp_path: Path) -> None:
     names = {op["name"] for op in operations}
     # The 2025 record and the legacy StatSource are preserved, never revised or
     # retracted, and no duplicate identities are minted for them.
-    assert "PlayerGameStats/2025/01/00-0033873" not in names
-    assert "StatSource/nflverse-2026.07.02" not in names
+    assert "2025/01/00-0033873" not in names
+    assert "Statnflverse-2026.07.02" not in names
     assert not any(op["operation"] == "retract" for op in operations)
+
+
+def test_native_nfl_baseline_keeps_pins_and_accepts_next_week(tmp_path: Path) -> None:
+    source = _envelope()
+    desired = domain.transform(_bytes(source))
+    current = []
+    for record in deepcopy(desired):
+        for shape in record["shapes"]:
+            map_reference_fields(record["data"], domain.SHAPE_FIELDS[shape], lambda ref: f"{ref}@v7")
+        current.append({**record, "active": True, "version": 7})
+    desired_path, current_path, operations_path = (
+        tmp_path / "desired.jsonl", tmp_path / "current.jsonl", tmp_path / "operations.jsonl"
+    )
+    desired_path.write_bytes(canonical_jsonl(desired))
+    current_path.write_bytes(canonical_jsonl(current, current=True))
+    policy = ScopePolicy("agentgm/nfl-stats", "**", False, "preserve", require_existing_records=True)
+    result = reconcile(desired_path, current_path, operations_path, policy, reference_fields=domain.SHAPE_FIELDS)
+    assert result.summary.operation_count == 0
+    assert operations_path.read_bytes() == b""
+
+    stats = source["streams"][f"player-stats/{SEASON}"]
+    next_week = {**stats[0], "week": 2, "passing_yards": 300}
+    _with_stream(source, f"player-stats/{SEASON}", [*stats, next_week])
+    desired_path.write_bytes(canonical_jsonl(domain.transform(_bytes(source))))
+    result = reconcile(desired_path, current_path, operations_path, policy, reference_fields=domain.SHAPE_FIELDS)
+    operations = parse_jsonl(operations_path.read_bytes())
+    added = next(op for op in operations if op["name"] == f"{SEASON}/02/00-0033873")
+    assert added["operation"] == "add"
+    assert added["shapes"] == ["PlayerGameStats"]
+    assert result.summary.retract_count == 0
+    assert not any(op["name"] == f"{SEASON}/01/00-0033873" for op in operations)
+
+    source_artifact = next(i for i, op in enumerate(operations) if op["name"] == f"player-stats/{SEASON}")
+    assert source_artifact < operations.index(added)
+    assert operations[source_artifact]["expectedVersion"] == 7

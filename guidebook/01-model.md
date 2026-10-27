@@ -28,42 +28,45 @@ Mushroom's jobs are unpartitioned. They support complete-current synchronization
 
 The project declares one target, one managed scope, one completeness claim, and one absence policy. It transforms a frozen snapshot into operation-neutral records.
 
-Desired Things have this shape:
+Every desired record is a Thing with an independent name, explicit declared Shapes, and a body:
 
 ```json
 {
-  "kind": "thing",
-  "shape": "Person",
-  "wref": "Person/source/alice",
-  "data": { "name": "Alice" }
+  "name": "source/alice",
+  "shapes": ["Person", "Researcher"],
+  "data": { "displayName": "Alice", "field": "ecology" }
 }
 ```
 
-Collections name a relationship and contain endpoint references:
+Collections and assertions are Things too. Their semantics live in the declared Shape contracts and ordinary body fields:
 
 ```json
 {
-  "kind": "collection",
-  "shape": "Arc",
-  "wref": "Arc/source/alice-team",
-  "collectionType": "arc",
-  "members": ["Person/source/alice", "Team/source/data"]
+  "name": "source/alice-team",
+  "shapes": ["Arc"],
+  "data": { "from": "source/alice", "to": "source/data-team" }
 }
 ```
-
-Assertions describe the Thing or relationship named by `about`:
 
 ```json
 {
-  "kind": "assertion",
-  "shape": "Membership",
-  "wref": "Membership/source/alice-team",
-  "about": "Arc/source/alice-team",
-  "data": { "role": "member" }
+  "name": "source/alice-membership",
+  "shapes": ["Membership"],
+  "data": { "about": "source/alice-team", "role": "member" }
 }
 ```
 
-Desired state never contains operation verbs, versions, or active flags. Names are stable and unpinned. A Shape must match the first segment of its record Wref.
+A List uses `data.items`; a Set uses `data.members`. Other collection Shapes use their approved body contracts instead of a separate collection record kind. Desired state never contains operation verbs, versions, or active flags. Names are stable and unpinned; a Shape name does not determine a Thing's name. Current records use the same representation plus `active` and a positive `version`.
+
+`shapes` contains actual declarations, not inherited certificates. Declaration order is insignificant. Current-state capture resolves reference fields through effective certified contracts, including inherited fields, and retains stored version selectors. For a versioned field, an unpinned desired reference to the same Thing preserves its current pin during an unrelated revision; an explicitly different selector remains a requested change. For an `either` field, an unpinned reference requests identity binding, so changing between pinned and unpinned forms is meaningful. Certified reference schemas travel with current-state evidence so inherited fields obey these rules. Reference Lists preserve their authored order and repeated members; versioned members retain history by identity through insertion and reordering. Arrays of objects still pair by position because no item identity contract is defined. Current capture retains retracted name holders for reactivation checks and submission identity, choosing the active holder or latest tombstone and rejecting ambiguous history. Ordinary strings are compared exactly.
+
+## Whole-Thing ownership and declaration migrations
+
+The managed name namespace grants authority over every non-Shape Thing matching the glob, regardless of its Shapes: its complete body and declaration set. Never combine `retract` with a namespace another writer uses. Selecting a Thing because it carries a particular Shape does not establish ownership. Independent writers may own disjoint names in one repository; independently maintaining fields or declarations on the same Thing is unsupported.
+
+By default, `ALLOW_SHAPE_CHANGES=False` stops a plan when an existing Thing's desired declaration set changes. New Things receive their desired declarations. For an explicit migration, record the reviewed before/after declarations and body changes in `project/SPEC.md`, set `ALLOW_SHAPE_CHANGES=True`, and inspect the fresh plan. This policy is captured in the plan. Return to `False` after the migration converges. Operator rewrites can add `CorrectedThing` or `RedactedThing` declarations; inspect the operator history and review the resulting transition rather than treating it as ordinary source drift or automatically stripping system markers.
+
+Ordinary body revisions and migration revisions both submit the entire desired declaration set. Mushroom does not guess which declarations another writer meant to preserve.
 
 ## What happens when a record disappears?
 
@@ -89,4 +92,4 @@ If different groups need different policies, use `preserve` for the whole produc
 
 ## Target Shapes
 
-The project records the exact Shapes its output requires. Mushroom v1 does not create, synchronize, or guard those Shapes. Target-schema drift is a documented limitation: verify prerequisites manually before a live evaluation, and treat schema-related validation failures as a reason to stop rather than improvise.
+The project records the exact Shapes its output requires. Mushroom does not create, synchronize, or guard those Shapes. Target-schema drift is a documented limitation: verify prerequisites manually before a live evaluation, and treat schema-related validation failures as a reason to stop rather than improvise.

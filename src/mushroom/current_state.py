@@ -1,30 +1,17 @@
-"""Optional complete SDK HEAD capture; Dagster keeps using the local fixture by default."""
+"""Complete SDK HEAD capture for whole-Thing reconciliation."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterable, Mapping
+from copy import deepcopy
+import re
 from typing import Protocol
 
 from mushroom.kernel import KernelError, canonical_jsonl, matches_scope
-
+from mushroom.references import map_reference_fields
 
 _TARGET = re.compile(r"^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9.-]*$")
-_COLLECTION_FIELDS = {
-    "Arc": ("from", "to"),
-    "Bond": ("ends",),
-    "List": ("items",),
-    "Pair": ("first", "second"),
-    "Set": ("members",),
-    "Triple": ("first", "second", "third"),
-}
-_TYPE_SPEC_KEYS = {
-    "array": {"type", "description", "items", "minItems", "maxItems"},
-    "boolean": {"type", "description"},
-    "number": {"type", "description", "minimum", "maximum", "integer"},
-    "string": {"type", "description", "minLength", "maxLength", "pattern", "enum"},
-    "wref": {"type", "description", "shape"},
-}
+_PIN = re.compile(r"@v[1-9][0-9]*$")
 
 
 class CurrentStateError(KernelError):
@@ -32,40 +19,41 @@ class CurrentStateError(KernelError):
 
 
 class _Client(Protocol):
-    shape: object
-
     def repository(self, target: str) -> object: ...
 
 
 def capture_current_state(client: _Client, *, target: str, pattern: str) -> tuple[int, bytes]:
-    """Read complete managed SDK HEAD scopes into planner-ready current-state JSONL."""
-
+    """Read each managed Thing once, retaining its complete body and declarations."""
     if not isinstance(target, str) or _TARGET.fullmatch(target) is None:
         raise CurrentStateError("SDK HEAD target must be an unpinned organization/repository")
-    if not isinstance(pattern, str) or not pattern.strip() or "/" not in pattern or "@" in pattern:
-        raise CurrentStateError("managed scope must match unpinned Shape/name wrefs")
-    org_name, repo_name = target.split("/", 1)
+    if not isinstance(pattern, str) or not pattern.strip() or "@" in pattern:
+        raise CurrentStateError("managed scope must match unpinned Thing names")
     things = client.repository(target).things  # type: ignore[attr-defined]
-    sources = [
-        dict(source)
-        for kind in ("thing", "collection", "assertion")
-        for item in things.head_iter(
-            kind=kind,
-            data_mode="full",
-            exclude_infra_shapes=True,
-            include_retracted=False,
-            limit=500,
-        )
-        for source in (item.as_dict(),)
-        # The server's kind=thing drain may also return collections (a
-        # collection is a thing), which would surface the same durable
-        # identity twice across drains. Keep each row only in the drain
-        # whose requested kind matches its reported kind.
-        if source.get("kind") == kind and _matches_scope(source, pattern)
-    ]
+    sources = []
+    for item in things.head_iter(
+        data_mode="full", include_validated_shapes=True,
+        exclude_infra_shapes=True, include_retracted=True, limit=500,
+    ):
+        if item.kind == "shape":
+            continue
+        source = item.as_dict()
+        if _matches_scope(source, pattern):
+            sources.append(source)
     if not sources:
         return canonical_current_state(())
-    shape_fields = _shape_fields(client, org_name, repo_name)
+    sources = _current_name_heads(sources)
+    certificates: set[str] = set()
+    for source in sources:
+        declared = source.get("declaredShapes")
+        validated = source.get("validatedShapes")
+        if not isinstance(declared, list) or not isinstance(validated, list):
+            raise CurrentStateError("SDK row lacks declarations or complete Shape certificates")
+        if not all(isinstance(ref, str) and _PIN.search(ref) for ref in declared + validated):
+            raise CurrentStateError("SDK Shape certificates must be version pinned")
+        if not set(declared) <= set(validated):
+            raise CurrentStateError("SDK certificate closure omits declared Shapes")
+        certificates.update(validated)
+    fields = _certified_fields(things, sorted(certificates))
     references: set[str] = set()
 
     def remember(reference: str) -> str:
@@ -73,59 +61,91 @@ def capture_current_state(client: _Client, *, target: str, pattern: str) -> tupl
         return reference
 
     for source in sources:
-        _map_source_references(source, shape_fields, remember)
+        if source.get("active") is True:
+            _map_source_references(source, fields, remember, resolve_subject=False)
+        else:
+            _map_assertion_subject(source, remember, resolve_subject=False)
     labels = _reference_labels(things, sorted(references), target)
     for source in sources:
-        _map_source_references(source, shape_fields, labels.__getitem__)
-    # Assertions about a Shape (ontology-governance records such as
-    # SemanticContract/NamingContract) resolve to a single-segment about
-    # reference, which the reconciler's Shape/name grammar rejects. A data
-    # project never produces assertion desired state about a Shape, so these
-    # records are structurally unmanageable here; exclude them from the
-    # captured current state (equivalent to preserved, under any policy).
-    sources = [
-        source
-        for source in sources
-        if not (
-            source.get("kind") == "assertion"
-            and isinstance(source.get("aboutWref"), str)
-            and "/" not in source["aboutWref"].partition("@")[0]
-        )
-    ]
+        # A field may appear in several certificates: normalize it only once.
+        if source.get("active") is True:
+            _map_source_references(source, fields, lambda reference: labels.get(reference, reference))
+        else:
+            _map_assertion_subject(source, lambda reference: labels.get(reference, reference))
+        source["referenceFields"] = {certificate: fields[certificate] for certificate in source["validatedShapes"]}
     return canonical_current_state(sources)
 
 
-def _shape_fields(client: _Client, org_name: str, repo_name: str) -> dict[str, Mapping[str, object]]:
-    result: dict[str, Mapping[str, object]] = {}
-    shapes = client.shape.list(org_name, repo_name).items  # type: ignore[attr-defined]
-    for shape in shapes:
-        if not shape.active or shape.version is None:
+def _current_name_heads(sources: list[dict]) -> list[dict]:
+    heads: dict[str, dict] = {}
+    for source in sources:
+        name = source["name"]
+        previous = heads.get(name)
+        if previous is None:
+            heads[name] = source
             continue
-        data = shape.version.data
-        fields = data.get("fields") if isinstance(data, Mapping) else None
-        if not isinstance(fields, Mapping):
-            raise CurrentStateError(f"Shape {shape.name} lacks field definitions")
-        result[shape.name] = fields
-    return result
+        active, prior_active = source.get("active"), previous.get("active")
+        if type(active) is not bool or type(prior_active) is not bool or active and prior_active:
+            raise CurrentStateError("SDK HEAD returned ambiguous current name holders")
+        if active or prior_active:
+            if active:
+                heads[name] = source
+            continue
+        created, prior_created = source.get("createdAt"), previous.get("createdAt")
+        if type(created) is not int or type(prior_created) is not int or created == prior_created:
+            raise CurrentStateError("SDK HEAD cannot order retracted name holders")
+        if created > prior_created:
+            heads[name] = source
+    return list(heads.values())
+
+
+def _certified_fields(things: object, certificates: list[str]) -> dict[str, Mapping[str, object]]:
+    if not certificates:
+        return {}
+    shape_references = []
+    for certificate in certificates:
+        if certificate.startswith("wh:"):
+            origin, repository, name = certificate.split("/", 2)
+            shape_references.append(f"{origin}/{repository}/{name if name.startswith('hub/shapes/') else 'hub/shapes/' + name}")
+        else:
+            shape_references.append(certificate if certificate.startswith("hub/shapes/") else f"hub/shapes/{certificate}")
+    result = things.get_many(shape_references, include_retracted=True)  # type: ignore[attr-defined]
+    if result.missing or len(result.items) != len(certificates):
+        raise CurrentStateError("cannot read all certified Shape versions")
+    fields: dict[str, Mapping[str, object]] = {}
+    for reference, item in zip(certificates, result.items, strict=True):
+        if item.kind != "shape" or not isinstance(item.data, Mapping):
+            raise CurrentStateError(f"certified Shape {reference} is not a Shape definition")
+        own_fields = item.data.get("fields")
+        if not isinstance(own_fields, Mapping):
+            raise CurrentStateError(f"certified Shape {reference} lacks field definitions")
+        fields[reference] = own_fields
+    return fields
 
 
 def _reference_labels(things: object, references: list[str], target: str) -> dict[str, str]:
     if not references:
         return {}
-    resolved = things.head_versions(references)  # type: ignore[attr-defined]
-    if resolved.missing:
-        raise CurrentStateError(f"cannot resolve current reference: {resolved.missing[0]}")
-    if len(resolved.items) != len(references):
-        raise CurrentStateError("reference resolution returned an incomplete result")
-    labels: dict[str, str] = {}
-    for reference, item in zip(references, resolved.items, strict=True):
-        canonical = item.extra.get("canonicalWref")
-        # Desired references are unpinned; the storage pin must not force a revision.
-        labels[reference] = (
-            item.wref
-            if not isinstance(canonical, str) or canonical.startswith(f"wh:{target}/")
-            else canonical
-        )
+    # Shape subjects already name a pinned Shape version; no Thing-name rewrite.
+    shape_subjects = {
+        ref for ref in references
+        if (ref.split("/", 2)[-1] if ref.startswith("wh:") else ref).startswith("hub/shapes/")
+    }
+    requested = [ref for ref in references if ref not in shape_subjects]
+    labels = {ref: ref for ref in shape_subjects}
+    if not requested:
+        return labels
+    resolved = things.head_versions(requested)  # type: ignore[attr-defined]
+    if resolved.missing or len(resolved.items) != len(requested):
+        raise CurrentStateError("cannot resolve every current reference")
+    for reference, item in zip(requested, resolved.items, strict=True):
+        canonical = item.canonical_wref
+        if not isinstance(canonical, str) or not canonical:
+            raise CurrentStateError("resolved reference lacks a canonical identity")
+        local_prefix = f"wh:{target}/"
+        label = canonical[len(local_prefix):] if canonical.startswith(local_prefix) else canonical
+        selector = _PIN.search(reference)
+        labels[reference] = _PIN.sub("", label) + (selector.group() if selector else "")
     return labels
 
 
@@ -133,159 +153,117 @@ def _map_source_references(
     source: dict[str, object],
     shape_fields: Mapping[str, Mapping[str, object]],
     replace: Callable[[str], str],
+    *, resolve_subject: bool = True,
 ) -> None:
-    kind, shape, data = (source.get(key) for key in ("kind", "shapeName", "data"))
-    if not isinstance(shape, str) or not isinstance(data, Mapping):
-        raise CurrentStateError("SDK row lacks Shape-aware data")
+    data = source.get("data")
+    validated = source.get("validatedShapes")
+    if not isinstance(data, dict) or not isinstance(validated, list):
+        raise CurrentStateError("SDK row lacks certificate-aware data")
 
-    def replace_structural(reference: str) -> str:
-        selector = re.search(r"@v[1-9][0-9]*$", reference)
+    def normalize(reference: str) -> str:
+        selector = _PIN.search(reference)
         resolved = replace(reference)
-        return (
-            resolved
-            if selector is None or resolved.endswith(selector.group())
-            else f"{resolved}{selector.group()}"
-        )
+        return resolved if selector is None or _PIN.search(resolved) else resolved + selector.group()
 
-    if shape in _COLLECTION_FIELDS:
-        if not isinstance(data, dict):
-            raise CurrentStateError("SDK collection data is not an object")
-        for field in _COLLECTION_FIELDS[shape]:
-            value = data.get(field)
-            if isinstance(value, str):
-                data[field] = replace_structural(value)
-            elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-                for index, item in enumerate(value):
-                    value[index] = replace_structural(item)
-            else:
-                raise CurrentStateError(f"SDK collection field {shape}.{field} is invalid")
-    else:
-        fields = shape_fields.get(shape)
-        if fields is None:
-            raise CurrentStateError(f"SDK row references unknown Shape {shape}")
-        source["data"] = _map_typed_references(data, fields, replace)
-    if kind == "assertion":
-        about = source.get("aboutWref")
-        if not isinstance(about, str):
-            raise CurrentStateError("SDK assertion row lacks an about reference")
-        source["aboutWref"] = replace_structural(about)
+    try:
+        original = deepcopy(data)
+        for certificate in validated:
+            fields = shape_fields.get(certificate)
+            if fields is None:
+                raise CurrentStateError(f"SDK row references unread certified Shape {certificate}")
+            updated = deepcopy({name: original[name] for field in fields
+                                if (name := field.removesuffix("?")) in original})
+            map_reference_fields(updated, fields, normalize)
+            _merge_reference_changes(data, original, updated)
+        _map_assertion_subject(source, normalize, original=original, resolve_subject=resolve_subject)
+    except ValueError as error:
+        raise CurrentStateError(str(error)) from None
 
 
-def _is_type_spec_object(value: object) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    declared = value.get("type")
-    if not isinstance(declared, str):
-        return False
-    base_type = declared.removesuffix("?")
-    return base_type in _TYPE_SPEC_KEYS and set(value) <= _TYPE_SPEC_KEYS[base_type]
+def _merge_reference_changes(destination: object, original: object, updated: object) -> None:
+    # Each certificate reads the original body, including shared nested fields.
+    for key in updated if isinstance(updated, dict) else range(len(updated)):
+        if isinstance(updated[key], (dict, list)):
+            _merge_reference_changes(destination[key], original[key], updated[key])
+        elif updated[key] != original[key]:
+            destination[key] = updated[key]
 
 
-def _map_typed_references(
-    value: object,
-    type_definition: object,
-    replace: Callable[[str], str],
-    *,
-    optional: bool = False,
-) -> object:
-    type_spec = _is_type_spec_object(type_definition)
-    declared = type_definition["type"] if type_spec else type_definition
-    base_type = declared.removesuffix("?") if isinstance(declared, str) else None
-    if base_type == "wref":
-        if value is None and (optional or declared.endswith("?")):
-            return value
-        if not isinstance(value, str):
-            raise CurrentStateError("SDK wref field is not a string")
-        return replace(value)
-    if value is None:
-        return value
-    if isinstance(type_definition, list):
-        if not isinstance(value, list):
-            raise CurrentStateError("SDK array field is not a list")
-        item_type = type_definition[0] if type_definition else None
-        for index, item in enumerate(value):
-            value[index] = _map_typed_references(item, item_type, replace)
-        return value
-    if type_spec and base_type == "array":
-        if not isinstance(value, list):
-            raise CurrentStateError("SDK array field is not a list")
-        for index, item in enumerate(value):
-            value[index] = _map_typed_references(
-                item, type_definition.get("items"), replace
-            )
-        return value
-    if isinstance(type_definition, Mapping) and not type_spec:
-        if not isinstance(value, dict):
-            raise CurrentStateError("SDK object field is not an object")
-        for field, nested_type in type_definition.items():
-            name = field.removesuffix("?")
-            if name in value:
-                value[name] = _map_typed_references(
-                    value[name], nested_type, replace, optional=field.endswith("?")
-                )
-    return value
+def _map_assertion_subject(
+    source: dict[str, object], replace: Callable[[str], str], *, original: dict | None = None,
+    resolve_subject: bool = True,
+) -> None:
+    indexed = source.get("aboutWref")
+    if indexed is None:
+        return
+    if not isinstance(indexed, str) or not indexed:
+        raise CurrentStateError("SDK assertion index lacks a valid subject")
+    data = source.get("data")
+    if not isinstance(data, dict):
+        raise CurrentStateError("SDK assertion lacks object data")
+    subject = replace(indexed)
+    native = (original if original is not None else data).get("about")
+    if "about" in (original if original is not None else data):
+        if not isinstance(native, str):
+            raise CurrentStateError("SDK assertion body conflicts with indexed subject")
+        normalized_native = replace(native)
+        if resolve_subject and normalized_native != subject:
+            raise CurrentStateError("SDK assertion body conflicts with indexed subject")
+    if not resolve_subject:
+        return
+    if "about" not in (original if original is not None else data):
+        source["needsAssertionAdoption"] = True
+    data["about"] = subject
+    source["aboutWref"] = subject
+    source["assertionSubject"] = subject
 
 
 def canonical_current_state(rows: Iterable[Mapping[str, object]]) -> tuple[int, bytes]:
-    """Normalize complete SDK HEAD rows into planner-ready current-state JSONL."""
-
-    by_durable_id: dict[str, dict[str, object]] = {}
-    durable_id_by_wref: dict[str, str] = {}
+    """Normalize SDK rows without deriving declarations from certificate membership."""
+    identities: set[str] = set()
+    names: set[str] = set()
+    records: list[dict[str, object]] = []
     for source in rows:
-        durable_id = _durable_id(source)
+        source = deepcopy(dict(source))
+        _map_assertion_subject(source, lambda reference: reference)
+        metadata = source.get("metadata")
+        durable_id = source.get("durableId")
+        if durable_id is None and isinstance(metadata, Mapping):
+            durable_id = metadata.get("durableId")
         if not isinstance(durable_id, str) or not durable_id:
             raise CurrentStateError("SDK row lacks a durable identity")
-        if durable_id in by_durable_id:
-            raise CurrentStateError("SDK HEAD drains returned duplicate current identities")
-        row = _normalize(source)
-        wref = row["wref"]
-        shape = row["shape"]
-        if not isinstance(wref, str) or not isinstance(shape, str) or "@" in wref or wref.partition("/")[0] != shape:
-            raise CurrentStateError("SDK row wref must be an unpinned name for its Shape")
-        if wref in durable_id_by_wref:
-            raise CurrentStateError("SDK HEAD drains returned duplicate current wrefs")
-        durable_id_by_wref[wref] = durable_id
-        by_durable_id[durable_id] = row
-    records = list(by_durable_id.values())
+        if durable_id in identities:
+            raise CurrentStateError("SDK HEAD returned duplicate current identities")
+        name, shapes, data, version, active = (source.get(key) for key in ("name", "declaredShapes", "data", "version", "active"))
+        if not isinstance(name, str) or not name or "@" in name or name in names:
+            raise CurrentStateError("SDK HEAD returned invalid or duplicate current names")
+        if not isinstance(shapes, list) or not all(isinstance(shape, str) and shape for shape in shapes) or len(set(shapes)) != len(shapes):
+            raise CurrentStateError("SDK row lacks valid declared Shapes")
+        if not isinstance(data, dict) or isinstance(version, bool) or not isinstance(version, int) or version < 1 or type(active) is not bool:
+            raise CurrentStateError("SDK row is not a valid current-state record")
+        identities.add(durable_id)
+        names.add(name)
+        record = {"name": name, "shapes": sorted(_PIN.sub("", shape) for shape in shapes), "data": data, "active": active, "version": version, "durableId": durable_id}
+        if "validatedShapes" in source:
+            validated = source["validatedShapes"]
+            if not isinstance(validated, list) or not all(isinstance(shape, str) and _PIN.search(shape) for shape in validated) or len(set(validated)) != len(validated):
+                raise CurrentStateError("SDK row lacks valid pinned Shape certificates")
+            record["validatedShapes"] = sorted(validated)
+        if "referenceFields" in source:
+            record["referenceFields"] = source["referenceFields"]
+        if "assertionSubject" in source:
+            record["assertionSubject"] = source["assertionSubject"]
+        if "needsAssertionAdoption" in source:
+            record["needsAssertionAdoption"] = source["needsAssertionAdoption"]
+        records.append(record)
     try:
         return len(records), canonical_jsonl(records, current=True)
     except KernelError as error:
         raise CurrentStateError(str(error)) from None
 
 
-def _durable_id(source: Mapping[str, object]) -> object:
-    value = source.get("durableId")
-    metadata = source.get("metadata")
-    return value if value is not None else metadata.get("durableId") if isinstance(metadata, dict) else None
-
-
 def _matches_scope(source: Mapping[str, object], pattern: str) -> bool:
-    wref = source.get("wref")
-    if not isinstance(wref, str):
-        raise CurrentStateError("SDK row lacks an unpinned wref")
-    return matches_scope(wref, pattern)
-
-
-def _normalize(source: Mapping[str, object]) -> dict[str, object]:
-    kind, shape, wref, version, active = (source.get(key) for key in ("kind", "shapeName", "wref", "version", "active"))
-    if not all(isinstance(value, str) and value for value in (kind, shape, wref)) or isinstance(version, bool) or not isinstance(version, int) or version < 1 or type(active) is not bool:
-        raise CurrentStateError("SDK row is not a valid current-state record")
-    row: dict[str, object] = {"kind": kind, "shape": shape, "wref": wref, "version": version, "active": active}
-    data = source.get("data")
-    if kind in {"thing", "collection"} and shape in _COLLECTION_FIELDS:
-        fields = _COLLECTION_FIELDS[shape]
-        if not isinstance(data, dict):
-            raise CurrentStateError("SDK collection data is invalid")
-        members = data.get(fields[0]) if len(fields) == 1 else [data.get(field) for field in fields]
-        if not isinstance(members, list) or not all(isinstance(member, str) for member in members):
-            raise CurrentStateError("SDK collection members are invalid")
-        row.update(kind="collection", collectionType=shape.lower(), members=members)
-    elif kind == "assertion":
-        if not isinstance(data, dict) or not isinstance(source.get("aboutWref"), str):
-            raise CurrentStateError("SDK assertion row is invalid")
-        row.update(data=data, about=source["aboutWref"])
-    elif kind == "thing" and isinstance(data, dict):
-        row["data"] = data
-    else:
-        raise CurrentStateError("SDK row kind is invalid")
-    return row
+    name = source.get("name")
+    if not isinstance(name, str) or not name or "@" in name:
+        raise CurrentStateError("SDK row lacks an unpinned Thing name")
+    return matches_scope(name, pattern)

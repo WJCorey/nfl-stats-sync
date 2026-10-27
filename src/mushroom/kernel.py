@@ -4,31 +4,24 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import heapq
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from copy import deepcopy
+from collections import Counter, defaultdict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Iterator, Literal
+from typing import Iterator, Literal, Mapping
 
 import duckdb
 from warmhub.operations import to_backend_stream_operation
+from warmhub.errors import WarmHubError
 
-Kind = Literal["thing", "collection", "assertion"]
+from mushroom.references import BUILTIN_REFERENCE_FIELDS, map_reference_fields, reference_bindings, shape_name
+
 AbsencePolicy = Literal["preserve", "retract"]
-
-_PHASE = {
-    ("add", "thing"): 10,
-    ("revise", "thing"): 20,
-    ("add", "collection"): 30,
-    ("revise", "collection"): 40,
-    ("add", "assertion"): 50,
-    ("revise", "assertion"): 60,
-    ("retract", "assertion"): 70,
-    ("retract", "collection"): 80,
-    ("retract", "thing"): 90,
-}
 _REFERENCE_WREF = re.compile(r"^(?P<base>[^@\s]+)(?:@v[1-9][0-9]*)?$")
 
 
@@ -49,17 +42,23 @@ class ScopePolicy:
     pattern: str
     complete: bool
     absence: AbsencePolicy
+    allow_shape_changes: bool = field(default=False, kw_only=True)
+    require_existing_records: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         if (
             not isinstance(self.target, str)
             or not isinstance(self.pattern, str)
             or "/" not in self.target
-            or "/" not in self.pattern
+            or not self.pattern
             or "@" in self.target
             or "@" in self.pattern
         ):
             raise KernelError("target and managed-scope pattern must be unpinned names")
+        if type(self.allow_shape_changes) is not bool:
+            raise KernelError("allow_shape_changes must be a boolean")
+        if type(self.require_existing_records) is not bool:
+            raise KernelError("require_existing_records must be a boolean")
         if type(self.complete) is not bool:
             raise KernelError("managed-scope coverage must be a boolean")
         if self.absence not in {"preserve", "retract"}:
@@ -213,7 +212,10 @@ def parse_jsonl(payload: bytes) -> list[dict[str, object]]:
     return [json.loads(line) for line in payload.splitlines() if line.strip()]
 
 
-def reconcile(desired_path: Path, current_path: Path, operations_path: Path, policy: ScopePolicy) -> PlanResult:
+def reconcile(
+    desired_path: Path, current_path: Path, operations_path: Path, policy: ScopePolicy,
+    *, reference_fields: Mapping[str, Mapping[str, object]] | None = None,
+) -> PlanResult:
     """Plan canonical JSONL files through DuckDB without materializing either input."""
 
     if not all(isinstance(path, Path) for path in (desired_path, current_path, operations_path)):
@@ -247,8 +249,31 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
             );
             """
         )
-        _load_jsonl(connection, desired_path, policy, current=False)
+        for shape in reference_fields or {}:
+            if shape_name(shape) in BUILTIN_REFERENCE_FIELDS:
+                raise KernelError(f"SHAPE_FIELDS cannot override builtin Shape {shape}")
+        _load_jsonl(connection, desired_path, policy, current=False, reference_fields=reference_fields)
         _load_jsonl(connection, current_path, policy, current=True)
+
+        if policy.require_existing_records and not connection.execute(
+            "SELECT 1 FROM current WHERE active AND managed LIMIT 1"
+        ).fetchone():
+            raise KernelError("migration requires existing active records in the managed scope")
+        hints = connection.cursor().execute(
+            "SELECT d.wref, d.record_json, c.record_json FROM desired d JOIN current c "
+            "ON substr(d.wref, strpos(d.wref, '/') + 1) = c.wref "
+            "WHERE strpos(d.wref, '/') > 0 AND c.active "
+            "AND NOT EXISTS (SELECT 1 FROM current holder WHERE holder.wref = d.wref AND holder.active) "
+            "ORDER BY d.wref"
+        )
+        while hinted_rows := hints.fetchmany(1000):
+            for hinted_name, wanted_json, current_json in hinted_rows:
+                wanted, current = json.loads(wanted_json), json.loads(current_json)
+                hint = hinted_name.split("/", 1)[0]
+                if hint in {shape_name(shape) for shape in wanted["shapes"]} and hint in {
+                    shape_name(shape) for shape in (*current["shapes"], *current.get("validatedShapes", []))
+                }:
+                    raise KernelError(f"legacy Shape/name identity would duplicate active bare name: {hinted_name}")
 
         duplicate = connection.execute(
             """
@@ -271,7 +296,7 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
         if outside_scope:
             raise KernelError(f"desired record is outside the managed scope: {outside_scope[0]}")
 
-        connection.execute("CREATE TABLE operations (phase INTEGER, wref VARCHAR, payload VARCHAR, rank INTEGER DEFAULT 0)")
+        connection.execute("CREATE TABLE operations (wref VARCHAR, payload VARCHAR)")
         joined = connection.cursor().execute(
             """
             SELECT
@@ -284,59 +309,91 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
             """
         )
         counts = {"add": 0, "revise": 0, "retract": 0, "unchanged": 0, "preserved": 0}
+        dependencies: dict[str, tuple[str, set[str]]] = {}
+        declaration_changes: set[str] = set()
+        next_versions: dict[str, int] = {}
+        surviving_references: dict[str, set[str]] = {}
+        reference_selectors: dict[str, set[str]] = {}
+        versioned_selectors: dict[str, set[str]] = {}
         while rows := joined.fetchmany(1000):
             operations = []
             for wanted_json, existing_json, existing_is_managed in rows:
                 wanted = json.loads(wanted_json) if wanted_json else None
                 existing = json.loads(existing_json) if existing_json else None
+                if wanted is not None and existing is not None:
+                    if set(wanted["shapes"]) != set(existing["shapes"]) and not policy.allow_shape_changes:
+                        raise KernelError(f"declared Shapes changed; explicit migration required: {wanted['name']}")
+                    if existing["active"]:
+                        _require_binding_contract(wanted, existing, reference_fields)
+                        wanted = _preserve_reference_pins(wanted, existing, reference_fields)
                 if wanted is not None and (existing is None or not existing["active"]):
                     disposition = "add"
                 elif wanted is not None and existing is not None:
-                    if (
-                        wanted["kind"] != existing["kind"]
-                        or wanted["shape"] != existing["shape"]
-                    ):
-                        raise KernelError(
-                            f"active current identity changed kind or Shape: {wanted['wref']}"
-                        )
-                    if (
-                        wanted["kind"] == "assertion"
-                        and not _same_reference(wanted["about"], existing["about"])
-                    ):
-                        raise KernelError(
-                            f"assertion subject is immutable for active identity {wanted['wref']}"
-                        )
+                    if _is_assertion(existing) and wanted["data"].get("about") != existing["data"]["about"]:
+                        raise KernelError(f"assertion subject is immutable for active identity {wanted['name']}")
                     disposition = (
-                        "revise" if not _same_state(wanted, existing) else "unchanged"
+                        "revise" if existing.get("needsAssertionAdoption", False) or not _same_state(wanted, existing) else "unchanged"
                     )
                 elif not existing["active"] or not existing_is_managed or policy.absence == "preserve":
                     disposition = "preserved"
                 else:
                     disposition = "retract"
                 counts[disposition] += 1
+                survivor = wanted or (existing if existing["active"] and disposition == "preserved" else None)
+                survivor_refs = set()
+                if survivor is not None:
+                    survivor_refs = _typed_references(survivor, reference_fields, policy.target, existing)
+                    floating = {reference for reference in survivor_refs if "@" not in reference}
+                    if floating:
+                        surviving_references[survivor["name"]] = floating
                 if disposition in {"add", "revise", "retract"}:
                     record = wanted or existing
+                    if disposition == "revise":
+                        next_versions[record["name"]] = existing["version"] + 1
+                        if set(record["shapes"]) != set(existing["shapes"]):
+                            declaration_changes.add(record["name"])
                     operation = _operation(
                         disposition,
                         record,
                         version=existing["version"] if disposition != "add" else None,
                     )
+                    reference_selectors[record["name"]] = (
+                        survivor_refs if survivor is not None
+                        else _typed_references(record, reference_fields, policy.target, existing)
+                    )
+                    versioned_selectors[record["name"]] = _typed_references(record, reference_fields, policy.target, existing, versioned_only=True)
+                    dependencies[record["name"]] = (disposition, {
+                        reference.split("@", 1)[0] for reference in reference_selectors[record["name"]]
+                    })
                     operations.append(
                         (
-                            _PHASE[(operation["operation"], operation["kind"])],
-                            record["wref"],
+                            record["name"],
                             canonical_json(operation).decode(),
                         )
                     )
             if operations:
-                connection.executemany("INSERT INTO operations VALUES (?, ?, ?, 0)", operations)
-        _rank_addition_dependencies(connection)
+                connection.executemany("INSERT INTO operations VALUES (?, ?)", operations)
+        retractions = {name for name, (verb, _) in dependencies.items() if verb == "retract"}
+        for name, references in surviving_references.items():
+            if conflicts := references & retractions:
+                raise KernelError(f"surviving Thing {name} references a scheduled retraction: {sorted(conflicts)[0]}")
         digest = hashlib.sha256()
         byte_length = 0
         operations_path.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(dir=operations_path.parent, delete=False) as temporary:
             temporary_path = Path(temporary.name)
-            output_rows = connection.cursor().execute("SELECT payload FROM operations ORDER BY phase, rank, wref")
+            connection.execute("CREATE TABLE operation_order (position INTEGER, wref VARCHAR)")
+            order_rows = []
+            for position, name in enumerate(_ordered_operations(dependencies, declaration_changes, next_versions, reference_selectors, versioned_selectors)):
+                order_rows.append((position, name))
+                if len(order_rows) == 1000:
+                    connection.executemany("INSERT INTO operation_order VALUES (?, ?)", order_rows)
+                    order_rows.clear()
+            if order_rows:
+                connection.executemany("INSERT INTO operation_order VALUES (?, ?)", order_rows)
+            output_rows = connection.cursor().execute(
+                "SELECT payload FROM operations JOIN operation_order USING (wref) ORDER BY position"
+            )
             while rows := output_rows.fetchmany(1000):
                 for (payload,) in rows:
                     encoded = payload.encode()
@@ -360,82 +417,19 @@ def reconcile(desired_path: Path, current_path: Path, operations_path: Path, pol
     ), digest.hexdigest(), byte_length)
 
 
-def _reference_string_values(value: object) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, list):
-        for item in value:
-            yield from _reference_string_values(item)
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _reference_string_values(item)
-
-
-def _rank_addition_dependencies(connection: duckdb.DuckDBPyConnection) -> None:
-    """Order intra-plan additions so referenced records precede their referencers.
-
-    WarmHub validates each operation's wrefs against records that exist before
-    it in the same commit; an addition referencing a later addition is a
-    forward reference and the server rejects the whole batch (observed on prod
-    2026-09-10: stat records stamped with a SourceArtifact wref sorted before
-    the SourceArtifact addition itself). Within each add phase, emit
-    referenced additions first; ties stay in deterministic wref order.
-    """
-
-    rows = connection.execute(
-        "SELECT wref, payload FROM operations WHERE phase IN (10, 30, 50)"
-    ).fetchall()
-    if not rows:
-        return
-    planned = {wref for wref, _ in rows}
-    depends_on: dict[str, set[str]] = {}
-    for wref, payload in rows:
-        operation = json.loads(payload)
-        references: set[str] = set()
-        for part in (operation.get("data"), operation.get("members"), operation.get("about")):
-            for value in _reference_string_values(part):
-                base = value.partition("@")[0]
-                if base in planned and base != wref:
-                    references.add(base)
-        depends_on[wref] = references
-    ranks: dict[str, int] = {}
-    resolving: list[tuple[str, Iterator[str]]] = []
-    for start in depends_on:
-        if start in ranks:
-            continue
-        on_stack = {start}
-        resolving.append((start, iter(depends_on[start])))
-        while resolving:
-            node, pending = resolving[-1]
-            for dependency in pending:
-                if dependency in ranks:
-                    continue
-                if dependency in on_stack:
-                    raise KernelError(
-                        f"operation plan contains a reference cycle among additions: {dependency}"
-                    )
-                on_stack.add(dependency)
-                resolving.append((dependency, iter(depends_on[dependency])))
-                break
-            else:
-                ranks[node] = 1 + max(
-                    (ranks[dependency] for dependency in depends_on[node]), default=-1
-                )
-                on_stack.discard(node)
-                resolving.pop()
-    updates = [(rank, wref) for wref, rank in ranks.items() if rank]
-    if updates:
-        connection.executemany(
-            "UPDATE operations SET rank = ? WHERE wref = ? AND phase IN (10, 30, 50)",
-            updates,
-        )
-
-
-def _load_jsonl(connection: duckdb.DuckDBPyConnection, path: Path, policy: ScopePolicy, *, current: bool) -> None:
+def _load_jsonl(connection: duckdb.DuckDBPyConnection, path: Path, policy: ScopePolicy, *, current: bool, reference_fields=None) -> None:
     rows: list[tuple[object, ...]] = []
     for record in _records_from_jsonl(path):
         _validate_record(record, current=current)
-        rows.append((record["wref"], canonical_json(record).decode(), *( [record["active"]] if current else []), matches_scope(record["wref"], policy.pattern)))
+        if not current:
+            for shape in record["shapes"]:
+                name = shape_name(shape)
+                definition = (reference_fields or {}).get(shape, (reference_fields or {}).get(name))
+                if definition is None and name not in BUILTIN_REFERENCE_FIELDS:
+                    raise KernelError(f"desired identity {record['name']} requires reviewed effective SHAPE_FIELDS for {shape}")
+                if definition is not None and not isinstance(definition, Mapping):
+                    raise KernelError(f"effective SHAPE_FIELDS must contain field definitions for {shape}")
+        rows.append((record["name"], canonical_json(record).decode(), *( [record["active"]] if current else []), matches_scope(record["name"], policy.pattern)))
         if len(rows) == 1000:
             connection.executemany("INSERT INTO current VALUES (?, ?, ?, ?)" if current else "INSERT INTO desired VALUES (?, ?, ?)", rows)
             rows.clear()
@@ -460,93 +454,311 @@ def _index(records: list[dict[str, object]], *, current: bool) -> dict[str, dict
     indexed: dict[str, dict[str, object]] = {}
     for record in records:
         _validate_record(record, current=current)
-        wref = record["wref"]
+        wref = record["name"]
         if wref in indexed:
             raise KernelError(f"duplicate record identity: {wref}")
         indexed[wref] = record
     return indexed
 
 
+def _valid_name(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and not any(
+        character.isspace() or character == "@" for character in value
+    ) and all(part not in {"", ".", ".."} for part in value.split("/"))
+
+
 def _validate_record(record: dict[str, object], *, current: bool) -> None:
     if not isinstance(record, dict):
         raise KernelError("records must be objects")
-    kind = record.get("kind")
-    shape = record.get("shape")
-    wref = record.get("wref")
-    if kind not in {"thing", "collection", "assertion"}:
-        raise KernelError("records may contain only things, collections, and assertions")
-    if not isinstance(wref, str) or "/" not in wref or "@" in wref:
-        raise KernelError("record wrefs must be unpinned names")
-    if not isinstance(shape, str) or not shape or wref.split("/", 1)[0] != shape:
-        raise KernelError("record shapes must match their wrefs")
+    if any(key in record for key in ("kind", "shape", "wref", "members", "about", "collectionType")):
+        raise KernelError("legacy records require an explicit migration to name, shapes, data")
+    if isinstance(record.get("name"), str) and record["name"].startswith("hub/shapes/"):
+        raise KernelError("Shape mutations are outside the Thing planner")
+    if not _valid_name(record.get("name")) or record["name"].startswith("wh:"):
+        raise KernelError("record names must be unpinned names without empty path segments")
+    shapes = record.get("shapes")
+    if not isinstance(shapes, list) or not all(_valid_name(shape) for shape in shapes) or len(shapes) != len(set(shapes)):
+        raise KernelError("declared Shapes must be a list of distinct unpinned names")
+    if not isinstance(record.get("data"), dict):
+        raise KernelError("Things require object data")
     if current:
+        certificates = record.get("validatedShapes", [])
+        if not isinstance(certificates, list) or not all(_is_reference(shape) for shape in certificates):
+            raise KernelError("validatedShapes must be a list of valid Shape references")
+        evidence = record.get("referenceFields", {})
+        if not isinstance(evidence, dict) or any(
+            certificate not in certificates or not isinstance(fields, dict)
+            for certificate, fields in evidence.items()
+        ):
+            raise KernelError("referenceFields must map validated Shape certificates to field definitions")
+        if "needsAssertionAdoption" in record:
+            if type(record["needsAssertionAdoption"]) is not bool or record["needsAssertionAdoption"] and "assertionSubject" not in record:
+                raise KernelError("needsAssertionAdoption must be a boolean with indexed assertionSubject evidence")
+        if "assertionSubject" in record:
+            subject = record["assertionSubject"]
+            if not _is_reference(subject) or subject != record["data"].get("about"):
+                raise KernelError("assertionSubject must match the normalized about reference")
+        if "durableId" in record and (not isinstance(record["durableId"], str) or not record["durableId"]):
+            raise KernelError("durableId must be a nonempty string")
         version = record.get("version")
         if type(record.get("active")) is not bool or type(version) is not int or version < 1:
             raise KernelError("current records require active and a positive integer version")
-    elif "active" in record or "version" in record:
+    elif any(key in record for key in ("active", "version", "durableId", "validatedShapes", "referenceFields", "assertionSubject", "needsAssertionAdoption")):
         raise KernelError("desired state must be operation-neutral")
-    if kind == "collection":
-        if not isinstance(record.get("collectionType"), str) or not isinstance(record.get("members"), list):
-            raise KernelError("collections require a type and members")
-        if not all(_is_reference(member) for member in record["members"]):
-            raise KernelError("collection members must be valid references")
-    else:
-        if not isinstance(record.get("data"), dict):
-            raise KernelError("things and assertions require object data")
-        if kind == "assertion":
-            about = record.get("about")
-            if not _is_reference(about):
-                raise KernelError("assertions require a valid about reference")
+    if _is_assertion(record) and not _is_reference(record["data"].get("about")):
+        raise KernelError("assertions require a valid about reference")
 
 
 def _is_reference(value: object) -> bool:
     match = _REFERENCE_WREF.fullmatch(value) if isinstance(value, str) else None
-    return match is not None and "/" in match.group("base")
+    return match is not None and _valid_name(match.group("base"))
+
+
+def _is_assertion(record: dict[str, object]) -> bool:
+    return "assertionSubject" in record or any(shape_name(shape) == "Assertion" for shape in (
+        *record["shapes"], *record.get("validatedShapes", [])
+    ))
 
 
 def _same_state(desired: dict[str, object], current: dict[str, object]) -> bool:
-    if desired["kind"] == "collection":
-        wanted, existing = desired["members"], current["members"]
-        return (
-            desired["collectionType"] == current["collectionType"]
-            and isinstance(wanted, list)
-            and isinstance(existing, list)
-            and len(wanted) == len(existing)
-            and all(_same_reference(left, right) for left, right in zip(wanted, existing, strict=True))
+    if set(desired["shapes"]) != set(current["shapes"]):
+        return False
+    wanted, existing = desired["data"], current["data"]
+    if wanted.keys() != existing.keys():
+        return False
+    structural = _structural_fields(desired, current)
+    return all(
+        _same_structural_value(key, wanted[key], existing[key], desired, current) if key in structural
+        else wanted[key] == existing[key]
+        for key in wanted
+    )
+
+
+def _structural_fields(desired: dict[str, object], current: dict[str, object]) -> set[str]:
+    fields = {"about"} if _is_assertion(desired) or _is_assertion(current) else set()
+    for shape in {*desired["shapes"], *current.get("validatedShapes", [])}:
+        fields.update(BUILTIN_REFERENCE_FIELDS.get(shape_name(shape), {}))
+    return fields
+
+
+def _unordered_field(field: str, *records: dict[str, object]) -> bool:
+    shapes = {shape_name(shape) for record in records for shape in (
+        *record["shapes"], *record.get("validatedShapes", [])
+    )}
+    return (field == "members" and "Set" in shapes) or (field == "ends" and "Bond" in shapes)
+
+
+def _preserve_unordered_pins(desired: list[str], current: list[str], *, distinct: bool) -> list[str]:
+    wanted = list(dict.fromkeys(desired)) if distinct else list(desired)
+    remaining = Counter(list(dict.fromkeys(current)) if distinct else current)
+    unmatched = defaultdict(list)
+    # Explicit selectors and exact identities claim their matches first.
+    for index, reference in enumerate(wanted):
+        if remaining[reference]:
+            remaining[reference] -= 1
+        elif "@" not in reference:
+            unmatched[reference].append(index)
+    candidates = defaultdict(list)
+    for reference, count in remaining.items():
+        if count:
+            candidates[reference.split("@", 1)[0]].extend([reference] * count)
+    for identity, indices in unmatched.items():
+        matches = candidates[identity]
+        if len(indices) < len(matches) and len(set(matches)) > 1:
+            raise KernelError(f"ambiguous historical collection reference; use an explicit selector: {identity}")
+        for index, reference in zip(indices, sorted(matches)):
+            wanted[index] = reference
+    return wanted
+
+
+def _same_structural_value(field: str, desired: object, current: object, *records: dict[str, object], allow_pin: bool = False) -> bool:
+    if not _unordered_field(field, *records) or not isinstance(desired, list) or not isinstance(current, list):
+        return _same_reference_value(desired, current) if allow_pin else desired == current
+    if not all(isinstance(reference, str) for reference in [*desired, *current]):
+        return False
+    if field == "members":
+        return set(desired) == set(current)
+    return Counter(desired) == Counter(current)
+
+
+def _require_binding_contract(desired, current, reference_fields):
+    if set(desired["shapes"]) != set(current["shapes"]):
+        return
+    certificates = current.get("validatedShapes", [])
+    if not certificates:
+        return
+    observed = current.get("referenceFields", {})
+    if any(shape_name(certificate) not in BUILTIN_REFERENCE_FIELDS and certificate not in observed for certificate in certificates):
+        raise KernelError("observed Shape contracts are incomplete; reviewed schema migration required")
+    if all(shape_name(shape) in BUILTIN_REFERENCE_FIELDS for shape in desired["shapes"]):
+        return
+    old = {}
+    new = {}
+    for certificate in certificates:
+        definition = observed.get(certificate, BUILTIN_REFERENCE_FIELDS.get(shape_name(certificate), {}))
+        for path, modes in reference_bindings(definition).items():
+            old[path] = old.get(path, modes) & modes
+    if _is_assertion(current):
+        old.setdefault(("about",), frozenset({"versioned"}))
+    for definition in _reference_definitions(desired, reference_fields, current):
+        for path, modes in reference_bindings(definition).items():
+            new[path] = new.get(path, modes) & modes
+    if any(new.get(path) != modes for path, modes in old.items()):
+        raise KernelError("observed reference bindings differ from SHAPE_FIELDS; reviewed schema migration required")
+
+
+def _reference_definitions(record: dict[str, object], reference_fields, evidence=None):
+    # Desired writes use approved effective contracts, never a historical certificate.
+    if "active" not in record:
+        for shape in sorted(record["shapes"]):
+            name = shape_name(shape)
+            if name in BUILTIN_REFERENCE_FIELDS and evidence is not None:
+                observed = [definition for certificate, definition in evidence.get("referenceFields", {}).items() if shape_name(certificate) == name]
+                if observed:
+                    yield from observed
+                    continue
+            definition = (reference_fields or {}).get(shape, (reference_fields or {}).get(name, BUILTIN_REFERENCE_FIELDS.get(name)))
+            if definition is not None:
+                yield definition
+        return
+    certified = record.get("referenceFields", {})
+    yield from certified.values()
+    certified_names = {shape_name(certificate) for certificate in certified}
+    for shape in sorted({*record["shapes"], *record.get("validatedShapes", [])}):
+        name = shape_name(shape)
+        if name in certified_names:
+            continue
+        definition = (reference_fields or {}).get(shape, (reference_fields or {}).get(name, BUILTIN_REFERENCE_FIELDS.get(name)))
+        if definition is not None:
+            yield definition
+
+
+def _preserve_reference_pins(desired, current, reference_fields):
+    wanted = {**desired, "data": deepcopy(desired["data"])}
+    definitions = list(_reference_definitions(wanted, reference_fields, current))
+    # Collections match structurally before the ordinary positional schema walk.
+    for field in _structural_fields(wanted, current):
+        bindings = set()
+        field_defined = False
+        for definition in definitions:
+            spec = definition.get(field)
+            field_defined = field_defined or spec is not None
+            if isinstance(spec, list):
+                spec = spec[0] if spec else None
+            elif isinstance(spec, dict) and spec.get("type") == "array":
+                spec = spec.get("items")
+            if isinstance(spec, dict) and spec.get("type", "").removesuffix("?") == "wref":
+                bindings.add(spec.get("binding", "versioned"))
+            elif isinstance(spec, str) and spec.removesuffix("?") == "wref":
+                bindings.add("versioned")
+        binding = "versioned" if "versioned" in bindings or not field_defined else "identity" if "identity" in bindings else "either"
+        if field not in wanted["data"] or field not in current["data"]:
+            continue
+        desired_value, current_value = wanted["data"][field], current["data"][field]
+        if (
+            binding == "versioned" and _unordered_field(field, wanted, current)
+            and isinstance(desired_value, list) and isinstance(current_value, list)
+            and all(isinstance(reference, str) for reference in [*desired_value, *current_value])
+        ):
+            preserved = _preserve_unordered_pins(desired_value, current_value, distinct=field == "members")
+            wanted["data"][field] = deepcopy(current_value) if _same_structural_value(
+                field, preserved, current_value, wanted, current
+            ) else preserved
+        elif _same_structural_value(field, desired_value, current_value, wanted, current, allow_pin=binding == "versioned"):
+            wanted["data"][field] = deepcopy(current_value)
+    try:
+        for definition in definitions:
+            map_reference_fields(wanted["data"], definition, lambda reference: reference, current=current["data"])
+    except ValueError as error:
+        raise KernelError(f"invalid typed reference data for {wanted['name']}") from error
+    return wanted
+
+
+def _same_reference_value(desired: object, current: object) -> bool:
+    if isinstance(desired, list) and isinstance(current, list):
+        return len(desired) == len(current) and all(
+            _same_reference_value(left, right) for left, right in zip(desired, current, strict=True)
         )
-    if desired["kind"] == "assertion":
-        return desired["data"] == current["data"] and _same_reference(desired["about"], current["about"])
-    return desired["data"] == current["data"]
+    return _same_reference(desired, current)
 
 
 def _same_reference(desired: object, current: object) -> bool:
     if desired == current:
         return True
-    return isinstance(desired, str) and isinstance(current, str) and current.startswith(f"{desired}@v")
+    return isinstance(desired, str) and isinstance(current, str) and current.startswith(f"{desired}@v") and _is_reference(current)
 
 
 def _operation(verb: str, record: dict[str, object], *, version: object | None = None) -> dict[str, object]:
-    operation: dict[str, object] = {
-        "operation": verb,
-        "kind": record["kind"],
-        "name": record["wref"],
-    }
+    operation: dict[str, object] = {"operation": verb, "name": record["name"]}
     if version is not None and verb != "add":
         operation["expectedVersion"] = version
     if verb != "retract":
-        if record["kind"] == "collection":
-            operation["type"] = record["collectionType"]
-            operation["members"] = record["members"]
-            if verb == "add":
-                operation["name"] = record["wref"].split("/", 1)[1]
-        else:
-            operation["data"] = record["data"]
-            if record["kind"] == "assertion" and verb == "add":
-                operation["about"] = record["about"]
+        operation.update(shapes=sorted(record["shapes"]), data=record["data"])
     try:
         normalized = to_backend_stream_operation(operation)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, WarmHubError) as error:
         raise KernelError("operation is rejected by the pinned WarmHub SDK") from error
     if normalized != operation:
         raise KernelError("operation differs from the pinned WarmHub SDK wire contract")
     return operation
+
+
+def _typed_references(
+    record: dict[str, object], reference_fields: Mapping[str, Mapping[str, object]] | None,
+    target: str, evidence: dict[str, object] | None = None, *, versioned_only: bool = False,
+) -> set[str]:
+    references: set[str] = set()
+    def remember(reference: str) -> str:
+        if not _is_reference(reference):
+            raise KernelError(f"invalid typed reference in {record['name']}: {reference}")
+        references.add(reference.removeprefix(f"wh:{target}/"))
+        return reference
+    try:
+        for definition in _reference_definitions(record, reference_fields, evidence):
+            map_reference_fields(record["data"], definition, remember, binding_filter={"versioned"} if versioned_only else None)
+        if _is_assertion(record) or evidence is not None and _is_assertion(evidence):
+            about = record["data"].get("about")
+            if not _is_reference(about):
+                raise KernelError("assertions require a valid about reference")
+            remember(about)
+    except ValueError as error:
+        raise KernelError(f"invalid typed reference data for {record['name']}") from error
+    return references
+
+
+def _ordered_operations(
+    dependencies: Mapping[str, tuple[str, set[str]]], declaration_changes: set[str],
+    next_versions: Mapping[str, int], reference_selectors: Mapping[str, set[str]],
+    versioned_selectors: Mapping[str, set[str]],
+) -> Iterator[str]:
+    """Keep only the typed dependency graph in memory; payloads remain in DuckDB."""
+    prerequisites: dict[str, set[str]] = {name: set() for name in dependencies}
+    dependents: dict[str, set[str]] = {name: set() for name in dependencies}
+    for name, (verb, references) in dependencies.items():
+        for reference in references & dependencies.keys():
+            other_verb = dependencies[reference][0]
+            if verb == "retract" and other_verb == "retract" and reference in reference_selectors[name] and reference != name:
+                prerequisites[reference].add(name)
+                dependents[name].add(reference)
+            elif verb != "retract" and (
+                other_verb == "add"
+                or (reference in declaration_changes and reference in reference_selectors[name] and reference != name)
+                or (reference in next_versions and (f"{reference}@v{next_versions[reference]}" in reference_selectors[name]
+                    or reference != name and reference in versioned_selectors[name]))
+            ):
+                prerequisites[name].add(reference)
+                dependents[reference].add(name)
+    phases = {"add": 0, "revise": 1, "retract": 2}
+    ready = [(phases[dependencies[name][0]], name) for name in dependencies if not prerequisites[name]]
+    heapq.heapify(ready)
+    count = 0
+    while ready:
+        _, name = heapq.heappop(ready)
+        count += 1
+        yield name
+        for dependent in sorted(dependents[name]):
+            prerequisites[dependent].remove(name)
+            if not prerequisites[dependent]:
+                heapq.heappush(ready, (phases[dependencies[dependent][0]], dependent))
+    if count != len(dependencies):
+        raise KernelError("operation reference dependency cycle cannot be applied safely")

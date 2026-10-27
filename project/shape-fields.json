@@ -1,0 +1,67 @@
+{
+  "Game": {
+    "sourceArtifactWref?": {
+      "shape": "SourceArtifact",
+      "type": "wref"
+    }
+  },
+  "Player": {
+    "crosswalkArtifactWref?": {
+      "shape": "SourceArtifact",
+      "type": "wref"
+    },
+    "sourceArtifactWref?": {
+      "shape": "SourceArtifact",
+      "type": "wref"
+    }
+  },
+  "PlayerGameStats": {
+    "gameWref": {
+      "shape": "Game",
+      "type": "wref"
+    },
+    "playerWref": {
+      "shape": "Player",
+      "type": "wref"
+    },
+    "sourceArtifactWref?": {
+      "shape": "SourceArtifact",
+      "type": "wref"
+    },
+    "statSourceWref?": {
+      "shape": "StatSource",
+      "type": "wref"
+    },
+    "teamWref": {
+      "shape": "Team",
+      "type": "wref"
+    }
+  },
+  "Source": {},
+  "SourceArtifact": {
+    "source": {
+      "shape": "Source",
+      "type": "wref"
+    }
+  },
+  "StatSource": {},
+  "Team": {},
+  "TeamGameStats": {
+    "gameWref": {
+      "shape": "Game",
+      "type": "wref"
+    },
+    "sourceArtifactWref?": {
+      "shape": "SourceArtifact",
+      "type": "wref"
+    },
+    "statSourceWref?": {
+      "shape": "StatSource",
+      "type": "wref"
+    },
+    "teamWref": {
+      "shape": "Team",
+      "type": "wref"
+    }
+  }
+}

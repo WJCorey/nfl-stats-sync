@@ -13,9 +13,9 @@ For each semantic partition, project code defines and records:
 - a stable, validated, source-derived partition key;
 - one immutable accepted source manifest or artifact digest for each materialization;
 - how a corrected publication maps back to the same key;
-- the disjoint Wref namespace owned by the slice;
+- the disjoint name namespace owned by the slice;
 - whether the source is complete inside that slice; and
-- the prior converged writer-owned Wrefs whose absence may authorize retraction.
+- the prior converged writer-owned names whose absence may authorize retraction.
 
 Shared records that do not belong to one release, such as a source description or content-addressed source artifact, stay outside partition ownership.
 
@@ -24,7 +24,7 @@ Shared records that do not belong to one release, such as a source description o
 A partition-aware path must retain Mushroom's existing safety boundary:
 
 - partition-namespaced source, current, desired, plan, result, readback, and residual artifacts;
-- bounded current reads for the project-supplied desired and prior-owned Wrefs;
+- bounded current reads for the project-supplied desired and prior-owned names;
 - deterministic reconciliation and expected versions;
 - validation and checked submission;
 - fresh readback and zero-residual convergence; and
@@ -34,11 +34,11 @@ The partition key selects logical work; it does not freeze source bytes, narrow 
 
 ## Corrections and retractions
 
-New slices normally add records and preserve older slices. A correction to an existing slice may revise stable Wrefs.
+New slices normally add records and preserve older slices. A correction to an existing slice may revise stable names.
 
-Retraction is narrower: a complete correction may retract an active Wref only when it appears in that slice's prior converged writer-owned set and is absent from the newly accepted complete source. Unknown or manually created Wrefs outside the approved desired and prior-owned sets remain untouched. Publish the next owned-Wref set only after checked submission, fresh readback, and zero residual operations succeed.
+Retraction is narrower: a complete correction may retract an active Thing only when it appears in that slice's prior converged writer-owned set and is absent from the newly accepted complete source. Unknown or manually created names outside the approved desired and prior-owned sets remain untouched. Publish the next owned-name set only after checked submission, fresh readback, and zero residual operations succeed.
 
-For a populated slice with no trusted prior owned-Wref set, bootstrap in `preserve` mode. Exact-read the desired Wrefs, converge them, and publish those converged desired Wrefs as the initial owned set. A verified repository checkpoint or stopped-writer whole-repository read may supply current-state input, but another current Wref may enter the owned set only when trusted prior write receipts or an explicitly reviewed exclusive namespace or crosswalk proves ownership. The bootstrap run cannot retract anything.
+For a populated slice with no trusted prior owned-name set, bootstrap in `preserve` mode. Exact-read the desired names, converge them, and publish those converged desired names as the initial owned set. A verified repository checkpoint or stopped-writer whole-repository read may supply current-state input, but another current Thing name may enter the owned set only when trusted prior write receipts or an explicitly reviewed exclusive namespace or crosswalk proves ownership. The bootstrap run cannot retract anything.
 
 ## Dagster operation
 

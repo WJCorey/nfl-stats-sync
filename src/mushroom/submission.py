@@ -9,12 +9,13 @@ import os
 import re
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Protocol
 
-from warmhub.errors import AllStreamOperationsFailedError
+from warmhub._generated.wire import WIRE_KEYS
+from warmhub.errors import AllStreamOperationsFailedError, WarmHubError
 from warmhub.operations import to_backend_stream_operation
 
 from mushroom.kernel import KernelError, canonical_json
@@ -31,6 +32,10 @@ _VALIDATE_MAX_BYTES = 4 * 1024 * 1024
 
 class SubmissionError(KernelError):
     """A plan was not accepted for validation or completely applied."""
+
+    def __init__(self, message: str, *, warnings: object = None) -> None:
+        super().__init__(message)
+        self.warnings = warnings
 
 
 class _Repository(Protocol):
@@ -153,6 +158,20 @@ def _validation_summary(
         raise SubmissionError("WarmHub dry-run result does not match the submitted plan")
     if not can_commit:
         raise SubmissionError("WarmHub rejected the plan during dry-run")
+    diagnostics = []
+    for operation in getattr(response, "operations", ()):
+        for result in (operation, *(getattr(operation, "effects", None) or ())):
+            warnings = _warning_payload(getattr(result, "warnings", None))
+            if _has_warnings(warnings):
+                diagnostics.append({
+                    "opIndex": getattr(operation, "op_index", None),
+                    "effectIndex": getattr(result, "effect_index", None),
+                    "warnings": warnings,
+                })
+    if diagnostics:
+        raise SubmissionError(
+            "WarmHub dry-run warnings require review and a fresh plan", warnings=diagnostics,
+        )
     return PlanValidation(
         operation_count=operation_count,
         would_apply_count=would_apply,
@@ -189,6 +208,9 @@ def apply_plan(
         operations_path=operations_path,
         plan_sha256=plan_sha256,
         plan_manifest_path=plan_manifest_path,
+    )
+    manifest_sha256 = _validate_plan_manifest(
+        plan_manifest_path, target=target, plan_sha256=plan_sha256
     )
     try:
         if results_path.resolve() in {
@@ -236,7 +258,9 @@ def apply_plan(
                 message,
                 batch,
                 chunk_size=len(batch),
-                submission_id=_batch_submission_id(target, plan_sha256, batch_index),
+                submission_id=_batch_submission_id(
+                    target, plan_sha256, manifest_sha256, batch_index
+                ),
                 retry=False,
             )
         except AllStreamOperationsFailedError as error:
@@ -274,6 +298,11 @@ def apply_plan(
             raise SubmissionError(
                 f"{error}; capture fresh state and replan before another write"
             ) from None
+        if any(_has_warnings(row.get("warnings")) for row in rows[start:stop]):
+            _write_results(results_path, rows)
+            raise SubmissionError(
+                "WarmHub applied a batch with warnings; inspect persisted receipts before replanning"
+            )
         statuses = [row["status"] for row in rows[start:stop]]
         if bool(getattr(response, "partial", False)) or any(
             status not in {"applied", "noop"} for status in statuses
@@ -314,20 +343,22 @@ def _checked_plan(
     return _parse_plan(payload)
 
 
-def _validate_plan_manifest(path: Path, *, target: str, plan_sha256: str) -> None:
+def _validate_plan_manifest(path: Path, *, target: str, plan_sha256: str) -> str:
     try:
         payload = path.read_bytes()
         manifest = json.loads(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SubmissionError("operation plan manifest cannot be read") from error
+    if not isinstance(manifest, dict) or manifest.get("format") != "mushroom-plan/v2":
+        raise SubmissionError("operation plan requires a mushroom-plan/v2 manifest; replan after migration")
     if (
-        not isinstance(manifest, dict)
-        or canonical_json(manifest) != payload
+        canonical_json(manifest) != payload
         or manifest.get("operations") != plan_sha256
         or not isinstance(manifest.get("policy"), dict)
         or manifest["policy"].get("target") != target
     ):
         raise SubmissionError("operation plan manifest does not bind this plan to the submission target")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _parse_plan(payload: bytes) -> tuple[dict[str, object], ...]:
@@ -336,17 +367,13 @@ def _parse_plan(payload: bytes) -> tuple[dict[str, object], ...]:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SubmissionError("operation plan is not valid JSONL") from error
     operations: list[dict[str, object]] = []
-    identities: set[tuple[object, ...]] = set()
+    identities: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise SubmissionError("operation plan rows must be objects")
         operation = dict(row)
         _validate_operation(operation)
-        identity = (
-            operation["kind"],
-            operation["name"],
-            operation.get("type") if operation["kind"] == "collection" and operation["operation"] == "add" else None,
-        )
+        identity = operation["name"]
         if identity in identities:
             raise SubmissionError("operation plan contains duplicate names")
         identities.add(identity)
@@ -355,44 +382,31 @@ def _parse_plan(payload: bytes) -> tuple[dict[str, object], ...]:
 
 
 def _validate_operation(operation: dict[str, object]) -> None:
-    verb, kind, name = operation.get("operation"), operation.get("kind"), operation.get("name")
-    if verb not in {"add", "revise", "retract"} or kind not in {"thing", "collection", "assertion"}:
+    verb, name = operation.get("operation"), operation.get("name")
+    if verb not in {"add", "revise", "retract"}:
         raise SubmissionError("operation plan contains an unsupported operation")
     if not isinstance(name, str) or not name or "@" in name:
         raise SubmissionError("operation plan names must be unpinned")
-    if not (kind == "collection" and verb == "add") and "/" not in name:
-        raise SubmissionError("operation plan names must be unpinned wrefs")
+    if name.startswith("hub/shapes/"):
+        raise SubmissionError("operation plans cannot mutate Shapes")
     expected = operation.get("expectedVersion")
     if verb == "add":
         if "expectedVersion" in operation:
             raise SubmissionError("add operations cannot have expected versions")
     elif isinstance(expected, bool) or not isinstance(expected, int) or expected < 1:
         raise SubmissionError("revisions and retractions need a positive expected version")
-    if verb == "retract":
-        if set(operation) != {"operation", "kind", "name", "expectedVersion"}:
-            raise SubmissionError("retraction operations contain unsupported fields")
-    else:
-        fields = {"operation", "kind", "name"}
-        if verb == "revise":
-            fields.add("expectedVersion")
-        if kind == "collection":
-            fields.update({"type", "members"})
-            valid = isinstance(operation.get("type"), str) and isinstance(operation.get("members"), list)
-        elif kind == "assertion":
-            fields.add("data")
-            if verb == "add":
-                fields.add("about")
-            valid = isinstance(operation.get("data"), dict) and (
-                verb != "add" or isinstance(operation.get("about"), str)
-            )
-        else:
-            fields.add("data")
-            valid = isinstance(operation.get("data"), dict)
-        if set(operation) != fields or not valid:
-            raise SubmissionError("operation plan fields do not match its operation kind")
+    fields = {"operation", "name"}
+    if verb != "add":
+        fields.add("expectedVersion")
+    if verb != "retract":
+        fields.update({"shapes", "data"})
+        if not isinstance(operation.get("shapes"), list) or not isinstance(operation.get("data"), dict):
+            raise SubmissionError("operation plans require declarations and object data")
+    if set(operation) != fields:
+        raise SubmissionError("operation plan fields do not match its v2 operation")
     try:
         normalized = to_backend_stream_operation(operation)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, WarmHubError) as error:
         raise SubmissionError("operation is rejected by the pinned WarmHub SDK") from error
     if normalized != operation:
         raise SubmissionError("operation differs from the pinned WarmHub SDK wire contract")
@@ -447,8 +461,6 @@ def _observed_row(
 ) -> dict[str, object]:
     submitted_name = getattr(result, "submitted_name", None)
     expected_name = operation["name"]
-    if submitted_name is None and operation["kind"] == "collection" and operation["operation"] == "add":
-        expected_name = f"{operation['type'].title()}/{expected_name}"
     observed_name = submitted_name or getattr(result, "name", None)
     observed_operation, status = getattr(result, "operation", None), getattr(result, "status", None)
     if observed_name != expected_name or observed_operation != operation["operation"] or status not in {"applied", "noop", "error"}:
@@ -468,7 +480,37 @@ def _observed_row(
         "status": status,
         "target": target,
         "version": version,
+        "warnings": _warning_payload(getattr(result, "warnings", None)),
     }
+
+
+def _warning_payload(value: object) -> object:
+    """Preserve receipt wire keys and project SDK preview models identically."""
+    if is_dataclass(value):
+        raw = getattr(value, "raw", None)
+        if raw:
+            return _warning_payload(raw)
+        result = dict(getattr(value, "extra", {}))
+        wire_keys = WIRE_KEYS.get(type(value).__name__, {})
+        for item in fields(value):
+            if item.name in {"extra", "raw"}:
+                continue
+            member = getattr(value, item.name)
+            if member is not None:
+                first, *rest = item.name.split("_")
+                key = wire_keys.get(item.name, first + "".join(part.title() for part in rest))
+                result[key] = _warning_payload(member)
+        return result
+    if isinstance(value, Mapping):
+        return {key: _warning_payload(member) for key, member in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_warning_payload(member) for member in value]
+    return value
+
+
+def _has_warnings(value: object) -> bool:
+    # Even legitimate ignored identity pins require review, not silent acceptance.
+    return any(bool(member) for member in value.values()) if isinstance(value, Mapping) else bool(value)
 
 
 def _string_or_none(value: object) -> str | None:
@@ -493,6 +535,7 @@ def _unknown_row(
         "status": "unknown",
         "target": target,
         "version": None,
+        "warnings": None,
     }
 
 
@@ -515,15 +558,20 @@ def _mark_unknown(rows: Sequence[dict[str, object]], error: BaseException) -> No
 
 
 def _mark_not_submitted(rows: Sequence[dict[str, object]], error: BaseException) -> None:
-    details: dict[str, str] = {"code": _safe_error_value(getattr(error, "code", None), type(error).__name__)}
+    details: dict[str, object] = {"code": _safe_error_value(getattr(error, "code", None), type(error).__name__)}
+    if isinstance(error, SubmissionError) and error.warnings is not None:
+        details["warnings"] = error.warnings
     for row in rows:
         row.update(dataHash=None, error=details, resolvedName=None, status="not_submitted", version=None)
 
 
-def _batch_submission_id(target: str, plan_sha256: str, batch_index: int) -> str:
+def _batch_submission_id(
+    target: str, plan_sha256: str, manifest_sha256: str, batch_index: int
+) -> str:
     return str(
         uuid.uuid5(
-            uuid.NAMESPACE_URL, f"mushroom:{target}:{plan_sha256}:{batch_index}"
+            uuid.NAMESPACE_URL,
+            f"mushroom:{target}:{plan_sha256}:{manifest_sha256}:{batch_index}"
         )
     )
 

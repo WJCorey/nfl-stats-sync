@@ -15,7 +15,7 @@ Source inspection and draft alternatives do not need approval. Do not implement 
 
 - [ ] Repository namespace, visibility, and purpose
 - [ ] Product questions
-- [ ] Shape names, kinds, fields, descriptions, and optionality
+- [ ] Shape names, fields, descriptions, and optionality
 - [ ] Stable record-name formulas and the source of each identifier
 - [ ] Relationships: what they connect, their direction, and what can be said about them
 - [ ] `design-warmhub-repo` convergence checkpoint (or equivalent review) result and accepted limits
@@ -59,11 +59,11 @@ After the repo design is approved, use `plan-warmhub-ingestion` when available t
 
 ## 4. Design identities
 
-Implement the approved identity model in one naming authority in `project/domain.py`. For every record, write its Wref formula and normalization rules in `project/SPEC.md`.
+Implement the approved identity model in one naming authority in `project/domain.py`. For every record, write its name formula and normalization rules in `project/SPEC.md`.
 
-For an existing target, decide whether that formula _continues_ its existing identities before writing a transform. Use the existing Wrefs only when their meaning and durable source keys demonstrably match. Otherwise write and review an explicit old-Wref-to-source-key crosswalk, or stop and start a separate scope. Do not mint cleaner source-derived names into a populated scope and mistake the resulting duplicate additions for a harmless backfill.
+For an existing target, decide whether that formula _continues_ its existing identities before writing a transform. Use the existing names only when their meaning and durable source keys demonstrably match. Otherwise write and review an explicit old-name-to-source-key crosswalk, or stop and start a separate scope. Do not mint cleaner source-derived names into a populated scope and mistake the resulting duplicate additions for a harmless backfill.
 
-Choose the narrowest managed scope that covers the approved names. Use `*/**` only when this project explicitly owns every non-Shape record in the target repository.
+Choose the narrowest managed name scope that covers the approved names. Ownership covers the whole Thing, including its body and declarations; Shape membership alone is not ownership. Use `**` only when this project explicitly owns every non-Shape record in the target repository. In a repository containing only bare names, `*` has the same ownership breadth; choosing it does not establish exclusivity.
 
 If one narrow managed scope cannot cover all approved names without also including unrelated records, revise the names or split the product before approval.
 
@@ -74,7 +74,7 @@ Identity code must:
 - reject missing, empty, or malformed identifiers;
 - never turn `None` or another invalid value into a plausible name;
 - produce the same name regardless of input order; and
-- reject duplicate final Wrefs.
+- reject duplicate final names.
 
 If no durable source identifier exists and identity uses correctable fields, document the compromise: what correction creates a new identity, what happens to the old record, and what future source capability would trigger migration.
 
@@ -90,7 +90,7 @@ First choose the synchronization unit using [the Mushroom model](01-model.md#cho
 
 For an independently meaningful slice, record its stable source-derived key and correction mapping, then follow the proposed [semantic-partition pattern](07-semantic-partitions.md). Until that pattern ships, use the current flow only for preserve-only accumulation. If the product requires separate slice runs, backfills, or slice-local retractions, stop for a reviewed partition-aware implementation rather than adding a Dagster partition definition to `project/` alone.
 
-Describe revisions at stable Wrefs. Describe what disappearance means. Use `preserve` unless absence is demonstrably meaningful and retraction is explicitly approved.
+Describe revisions at stable names. Describe what disappearance means. Use `preserve` unless absence is demonstrably meaningful and retraction is explicitly approved.
 
 Mushroom applies one absence policy to every record in its managed scope. If different groups have different disappearance meanings—for example, permanent source evidence alongside rows that may be removed from a corrected complete snapshot—record that limitation in `project/SPEC.md`. Keep the combined product on `preserve`, or split it into separate projects with disjoint managed scopes. See [the current model limit](01-model.md#current-limit-one-rule-per-project).
 
@@ -111,14 +111,19 @@ Record the target and installed Shape definitions in `project/SPEC.md`. Mushroom
 `project/domain.py` supplies:
 
 - `target()` — `MUSHROOM_TARGET` when set, otherwise the harmless synthetic example coordinate. Set `MUSHROOM_TARGET` before any live job in a copied project; never use the example fallback as a live target;
-- `MANAGED_SCOPE` — the single managed Wref glob;
+- `MANAGED_SCOPE` — the single managed name glob;
 - `ABSENCE_POLICY` — `preserve` or `retract`;
+- `REQUIRE_EXISTING_RECORDS` — required explicit choice: `False` for a reviewed first load, `True` for a populated migration expecting active managed records;
+- `ALLOW_SHAPE_CHANGES` — `False` ordinarily, `True` only for a reviewed declaration migration;
+- `SHAPE_FIELDS` — effective field contracts by Shape, including inherited reference fields, for typed operation ordering (an explicit entry for every custom declared Shape; use `{}` for a reference-free Shape);
 - `source_fixture()` and `current_state_fixture()` — local frozen vectors; and
 - `transform(source: bytes)` — deterministic operation-neutral records.
 
+Reference contracts use WarmHub field types, for example `SHAPE_FIELDS = {"Observation": {"station": "wref"}}`. Include inherited reference fields in each effective contract; nested objects and arrays use the same field schema as the approved Shape. Planning refuses any custom desired declaration missing its reviewed contract, including adds and added declarations. Existing rows' historical certificates cannot authorize new writes. These contracts determine dependency ordering, not Thing ownership. If a migration removes a declaration from a Thing whose schemas contain reference fields (including optional fields currently set to null), supply reviewed effective `SHAPE_FIELDS` contracts for every desired declaration, including an explicit empty contract when it has no references. Planning fails closed when it cannot determine the replacement binding rules.
+
 `project/acquisition.py` supplies `acquire() -> bytes`. Write ordinary project-owned Python and use whichever library the source requires. Return the exact frozen bytes that `transform()` will consume. The module must remain importable for fixture-only runs; `source_snapshot` calls `acquire()` for `prepare_fresh_sync`, `validate_sync`, and `synchronize`, and reads the frozen fixture otherwise. It must fail closed on unavailable, empty, malformed, or incoherently resolved input; there is no per-file moving fallback.
 
-Replace `tests/test_domain.py` and `tests/test_acquisition.py` with tests for the product you put in `project/`; they are synthetic examples. Keep the shared kernel/lifecycle tests (`test_kernel`, `test_current_state`, `test_submission`, and `test_sync`) unchanged.
+Replace `tests/test_domain.py` and `tests/test_acquisition.py` with tests for the product you put in `project/`; they are synthetic examples. Retain the shared kernel/lifecycle checks (`test_kernel`, `test_current_state`, `test_submission`, and `test_sync`) when upgrading; extend them for a reproducible shared defect rather than replacing the shared implementation locally.
 
 The frozen source is a JSON object with a top-level boolean `complete` field. That value is the coverage claim for this exact snapshot.
 
